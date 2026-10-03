@@ -1,0 +1,4 @@
+.pio/
+.cache/
+src/x4_secrets.h
+platformio.local.ini
