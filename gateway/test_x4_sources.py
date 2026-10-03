@@ -46,6 +46,40 @@ class Sources(unittest.TestCase):
         self.assertIn('start=',self.requests[1]); self.assertIn('end=',self.requests[1])
         self.assertEqual(s['observed_at'], NOW)
 
+    def test_partial_consent_preserves_events_without_unapproved_fields(self):
+        raw={'weather':{'state':'sunny'},'calendar':[{'summary':'Approved title',
+             'start':'2026-10-04','end':'2026-10-05','description':'PRIVATE'}]}
+        for fields in (['summary'], ['start']):
+            c=json.loads(json.dumps(CONFIG));c['sources'][1]['fields']=fields
+            s=self.call(raw,c)
+            events=s['calendar']['events']
+            self.assertEqual(len(events),1)
+            self.assertEqual('summary' in events[0], 'summary' in fields)
+            self.assertEqual('start' in events[0], 'start' in fields)
+            self.assertNotIn('PRIVATE',json.dumps(s))
+
+    def test_failed_refresh_reprojects_current_consent(self):
+        previous=self.call({'weather':{'state':'sunny'},'calendar':[
+            {'summary':'REVOKED TITLE','start':'2026-10-04','end':'2026-10-05'}]})
+        c=json.loads(json.dumps(CONFIG));c['sources'][1]['fields']=['start']
+        with patch.dict(os.environ, {'TEST_HA':'private-token'}):
+            s=x4_sources.collect(c, now=NOW+60, previous=previous,
+                                 http_get=lambda *a: (_ for _ in ()).throw(RuntimeError('offline')))
+        self.assertTrue(s['calendar']['available'])
+        self.assertTrue(s['calendar']['refresh_failed'])
+        self.assertEqual(s['calendar']['events'],[{'start':'2026-10-04','end':'2026-10-05'}])
+        self.assertNotIn('REVOKED TITLE',json.dumps(s))
+
+    def test_source_change_invalidates_failed_refresh_cache(self):
+        previous=self.call({'weather':{'state':'sunny'},'calendar':[
+            {'summary':'OLD SOURCE TITLE','start':'2026-10-04'}]})
+        c=json.loads(json.dumps(CONFIG));c['ha']['calendar_entity']='calendar.different'
+        with patch.dict(os.environ, {'TEST_HA':'private-token'}):
+            s=x4_sources.collect(c, now=NOW+60, previous=previous,
+                                 http_get=lambda *a: (_ for _ in ()).throw(RuntimeError('offline')))
+        self.assertFalse(s['calendar']['available'])
+        self.assertNotIn('OLD SOURCE TITLE',json.dumps(s))
+
     def test_valid_empty_calendar_is_not_unavailable(self):
         s=self.call({'weather':{'state':'unknown'},'calendar':[]})
         self.assertFalse(s['weather']['available'])
@@ -56,6 +90,8 @@ class Sources(unittest.TestCase):
         previous={'observed_at':NOW-4000,'weather':{'available':True,'observed_at':NOW-4000,
                   'temperature':10,'stale_after_s':1800},'calendar':{'available':True,
                   'observed_at':NOW-100,'events':[]}}
+        validated=x4_sources.feeds.validate_config(CONFIG)
+        previous['weather']['source_key']=x4_sources.source_key(validated,validated['sources'][0],'weather')
         with patch.dict(os.environ, {'TEST_HA':'secret'}):
             s=x4_sources.collect(CONFIG, now=NOW, previous=previous,
                                  http_get=lambda *a: (_ for _ in ()).throw(RuntimeError('token secret')))

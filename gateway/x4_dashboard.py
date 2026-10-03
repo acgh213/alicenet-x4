@@ -108,6 +108,12 @@ def _events(source, now, tz):
     return sorted(upcoming, key=lambda pair: pair[0].timestamp() if pair[0] else float("inf"))
 
 
+def visible_events(source, now, tz, count, offset=0):
+    events=_events(source,now,tz) if source.get('available') else []
+    offset=min(max(0,int(offset)),((max(1,len(events))-1)//count)*count)
+    return [event for _,event in events[offset:offset+count]]
+
+
 def _clock(stamp):
     return stamp.strftime("%I:%M %p").lstrip("0")
 
@@ -173,7 +179,8 @@ def _agenda(image, source, now, tz, box, count, offset=0):
         return
     offset = min(max(0, int(offset)), ((len(events) - 1) // count) * count)
     step = (y1 - y0 - 20) // count
-    for index, (start, event) in enumerate(events[offset:offset + count]):
+    for index, event in enumerate(visible_events(source,now,tz,count,offset)):
+        start=_date(event.get('start'),tz)
         top = y0 + step * index
         when = "Time unavailable" if start is None else ("Today" if start.date() == dt.datetime.fromtimestamp(now, tz).date() else f"{start.strftime('%a')} {start.day}") + " · " + ("All day" if len(event.get("start", "")) == 10 else _clock(start))
         _text(image, when, (x0, top, x1, top + 20), 15)

@@ -27,6 +27,14 @@ class Base(unittest.TestCase):
         return cur["id"] if cur else None
 
 
+class PrivateDatabase(Base):
+    def test_calendar_context_database_is_owner_only(self):
+        self.assertEqual(os.stat(self.store.path).st_mode & 0o777,0o600)
+        os.chmod(self.store.path,0o644)
+        s.Store(self.store.path)
+        self.assertEqual(os.stat(self.store.path).st_mode & 0o777,0o600)
+
+
 class Deck(Base):
     def test_empty_deck_has_no_current_card(self):
         self.assertIsNone(self.current())

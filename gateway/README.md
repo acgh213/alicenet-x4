@@ -56,6 +56,16 @@ Direct `gateway/x4ctl.py` supports the same verbs. Private client config is
   without sudo or shell interpolation. Provider acceptance is not human consumption.
 - Events and per-device page selection persist in `~/.local/state/x4d/x4.db`.
   Navigation/refresh are local; only assigned short Confirm requests are forwarded.
+  The gateway retains a bounded history of frame contexts by device/card/ETag and
+  atomically captures the matching context with an accepted event. Queued briefs
+  survive gateway restart and source refresh without substituting newer events.
+  Current consent/source provenance is checked again before forwarding; unavailable
+  displayed context is reported honestly rather than guessed.
+
+Calendar cache retention is fail-closed on unknown/changed source provenance and
+is re-projected through the current field consent even when HA refresh fails.
+Summary-only and start-only consent preserve events with missing-time/title
+fallbacks; neither means an empty calendar.
 
 Glance PNG preview: authenticated agent GET `/x4/v1/glance.png?page=home` (also
 `weather`/`agenda`). Device GET `/x4/v1/frame` returns exact 800×480 P4 PBM.

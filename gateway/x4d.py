@@ -275,11 +275,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"ok": False, "error": "device does not match token"})
         now = time.time()
         new = self.app.store.record_events(batch, now=now,
-                  action_labels=self.app.glance.action_labels() if self.app.glance else None)
+                  action_labels=self.app.glance.action_labels() if self.app.glance else None,
+                  contexts=self.app.glance.event_context(batch) if self.app.glance else None)
         moved = False
         for ev in new:
             if self.app.glance:
-                moved = self.app.glance.navigate(device,ev['button'],ev['press']) or moved
+                moved = self.app.glance.navigate(device,ev['button'],ev['press'],now=now,tz=self.app.tz) or moved
                 if ev['button']=='confirm' and ev['press']=='long':
                     # Keep the HTTP acknowledgement fast; collection may take seconds.
                     threading.Thread(target=self.app.refresh_sources,daemon=True).start()

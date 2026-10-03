@@ -6,6 +6,7 @@ the device. Selection happens at fetch time: timer wakes advance the deck only a
 """
 import datetime as dt
 import json
+import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -24,6 +25,8 @@ CREATE TABLE IF NOT EXISTS devices (device TEXT PRIMARY KEY, last_seen REAL, las
 CREATE TABLE IF NOT EXISTS events (rowid INTEGER PRIMARY KEY, device TEXT NOT NULL, boot INTEGER NOT NULL,
   seq INTEGER NOT NULL, card TEXT, etag TEXT, button TEXT NOT NULL, press TEXT NOT NULL, wake TEXT,
   received_at REAL NOT NULL, label TEXT, forward TEXT NOT NULL, UNIQUE (device, boot, seq));
+CREATE TABLE IF NOT EXISTS event_context (device TEXT, boot INTEGER, seq INTEGER, body TEXT NOT NULL,
+  PRIMARY KEY (device,boot,seq));
 """
 
 
@@ -37,6 +40,7 @@ class Store:
         self.path, self.dwell_s = path, dwell_s
         self.lock = threading.RLock()
         with closing(sqlite3.connect(self.path, timeout=10, isolation_level=None)) as db:
+            if self.path != ":memory:": os.chmod(self.path,0o600)
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
 
@@ -150,7 +154,7 @@ class Store:
                 "events": counts[0], "pending_forwards": counts[1] or 0, "dwell_s": self.dwell_s}
 
     # ---- events -----------------------------------------------------------
-    def record_events(self, batch, now, action_labels=None):
+    def record_events(self, batch, now, action_labels=None, contexts=None):
         """Insert events idempotently on (device, boot, seq); returns the ones that were new."""
         new = []
         with self.lock, self._db() as db:
@@ -168,6 +172,9 @@ class Store:
                                  (batch["device"], batch["boot"], ev["seq"], ev["card"], ev["etag"], ev["button"],
                                   ev["press"], ev["wake"], now, label, "pending" if label else "local"))
                 if cur.rowcount:
+                    if label and ev['seq'] in (contexts or {}):
+                        db.execute('INSERT INTO event_context VALUES (?,?,?,?)',
+                            (batch['device'],batch['boot'],ev['seq'],contexts[ev['seq']]))
                     new.append(ev)
         return new
 
@@ -183,7 +190,9 @@ class Store:
 
     def pending_forwards(self):
         with self._db() as db:
-            rows = db.execute("SELECT * FROM events WHERE forward='pending' ORDER BY rowid").fetchall()
+            rows = db.execute("SELECT e.*, c.body AS context FROM events e LEFT JOIN event_context c "
+                "ON e.device=c.device AND e.boot=c.boot AND e.seq=c.seq "
+                "WHERE e.forward='pending' ORDER BY e.rowid").fetchall()
         return [dict(r) for r in rows]
 
     def mark_forwarded(self, rowid, ok):

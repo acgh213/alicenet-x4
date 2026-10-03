@@ -55,6 +55,24 @@ class GlanceHTTP(Server):
             refresh.assert_called_once()
         self.assertEqual(self.app.store.events(1)[0]['forward'],'local')
 
+    def test_confirm_captures_http_frame_context_before_retry_refresh(self):
+        from test_x4_dashboard import fixture
+        snapshot=fixture()
+        snapshot['calendar']['events']=[{'summary':'HTTP CAPTURED','start':'2099-01-01'}]
+        self.app.glance.path.write_text(json.dumps(snapshot))
+        _,headers,_=self.call('GET','/x4/v1/frame')
+        batch=self.batch(button='confirm')
+        batch['events'][0]['etag']=headers['ETag']
+        self.assertEqual(self.call('POST','/x4/v1/events',batch)[0],200)
+        snapshot['calendar']['events']=[{'summary':'LATER SNAPSHOT','start':'2099-01-02'}]
+        self.app.glance.path.write_text(json.dumps(snapshot))
+        self.call('POST','/x4/v1/events',batch)
+        rows=self.app.store.pending_forwards()
+        self.assertEqual(len(rows),1)
+        msg=self.app.glance.forward_context(rows[0])
+        self.assertIn('HTTP CAPTURED',msg)
+        self.assertNotIn('LATER SNAPSHOT',msg)
+
     def test_glance_preview_requires_auth(self):
         url='/x4/v1/glance.png?page=home'
         self.assertEqual(self.call('GET',url)[0],401)

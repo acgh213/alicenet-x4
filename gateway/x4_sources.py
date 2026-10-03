@@ -8,6 +8,7 @@ import argparse
 import copy
 import datetime as dt
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -60,6 +61,36 @@ def _weather(config, source, http_get, now):
     return out
 
 
+def source_key(config, source, key):
+    ha=config['ha']
+    identity=[source['id'],ha.get('origin') or os.environ.get(ha.get('url_env',''),''),
+              ha.get(key+'_entity'),source.get('lookahead_s')]
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+def project_events(events, fields, *, retained=False, previous_fields=()):
+    approved=[]
+    for e in events[:256]:
+        if not isinstance(e,dict): continue
+        row={}
+        if retained:
+            title_field=e.get('_title_field','summary')
+            if title_field in fields and title_field in previous_fields and e.get('summary'):
+                row.update(summary=text(e['summary']),_title_field=title_field)
+        else:
+            for field in fields:
+                if field in ('summary','text','displayable_text','name','activity','health') and e.get(field):
+                    row.update(summary=text(e[field]),_title_field=field)
+                    break
+        if any(f in fields for f in ('start','at')):
+            for k in ('start','end'):
+                value=e.get(k) if k=='end' or retained else e.get('start',e.get('at'))
+                if isinstance(value,dict): value=value.get('dateTime',value.get('date'))
+                if isinstance(value,str) and len(value)<=40: row[k]=value
+        if row.get('summary') or row.get('start'): approved.append(row)
+    return approved
+
+
 def _calendar(config, source, http_get, now):
     end = now + source.get('lookahead_s', source['stale_after_s'])
     window = {'start':feeds._utc_iso(now), 'end':feeds._utc_iso(end)}
@@ -68,27 +99,10 @@ def _calendar(config, source, http_get, now):
     events = raw.get('events') if isinstance(raw,dict) else raw
     if not isinstance(events,list):
         raise feeds.FeedError('calendar unavailable')
-    approved = []
-    for e in events[:256]:
-        if not isinstance(e,dict):
-            continue
-        row = {}
-        if 'summary' in source['fields']:
-            row['summary'] = text(e.get('summary'))
-        elif 'text' in source['fields']:
-            row['summary'] = text(e.get('text'))
-        if 'start' in source['fields'] or 'at' in source['fields']:
-            for k in ('start','end'):
-                value = e.get(k)
-                if isinstance(value,dict):
-                    value = value.get('dateTime',value.get('date'))
-                if isinstance(value,str) and len(value) <= 40:
-                    row[k] = value
-        if row.get('summary') and row.get('start'):
-            approved.append(row)
+    approved = project_events(events,source['fields'])
     return {'available':True, 'observed_at':now, 'checked_at':now,
             'stale_after_s':source['stale_after_s'], 'window_start':window['start'],
-            'window_end':window['end'], 'events':approved}
+            'window_end':window['end'], 'events':approved, 'approved_fields':source['fields']}
 
 
 def collect(config, *, now=None, previous=None, http_get=None):
@@ -104,13 +118,19 @@ def collect(config, *, now=None, previous=None, http_get=None):
         key = 'weather' if source['kind'] == 'weather' else 'calendar' if source.get('calendar') else None
         if key is None:
             continue  # explicit glance sources only; never copy carousel notes
+        identity=source_key(config,source,key)
         try:
             result[key] = (_weather if key == 'weather' else _calendar)(config,source,http_get,now)
+            result[key]['source_key']=identity
         except Exception:
             # No error bodies/paths/URLs/tokens. Old data stays OLD and marked failed.
             old = (previous or {}).get(key)
-            if isinstance(old,dict) and old.get('available'):
+            if isinstance(old,dict) and old.get('available') and old.get('source_key')==identity:
                 result[key] = copy.deepcopy(old)
+                if key=='calendar':
+                    result[key]['events']=project_events(old.get('events',[]),source['fields'],
+                        retained=True,previous_fields=old.get('approved_fields',[]))
+                    result[key]['approved_fields']=source['fields']
             result[key]['refresh_failed'] = True
     return result
 
