@@ -7,7 +7,13 @@ ambient deep sleep → timer/power wake → recovers cleanly (304, no refresh).*
 Deliberately boring: no UI framework, no fonts on the device, no animation, no cloud, no
 self-OTA, no rebuild of the Pi stack.
 
-## Step 1: x4d + fake device (host only, buildable now)
+## Step 1: x4d + fake device (host only, no hardware) ✅ done 2026-10-03
+
+Built in `gateway/` with 83 tests. It was run live as two separate processes over HTTP: publish → timer wake →
+draw → 304 on the next wake → Right press pages → assigned Confirm/long-Confirm/Down reach
+the forward command with their labels → Left/Right are never forwarded → events survive a
+power-off. Agent-facing additions beyond the original plan: PNG/JPEG avatars, literal `\n`
+repair, `--line`, per-card `actions`, and an error instead of clipping.
 
 `~/projects/alicenet-x4/gateway/` (Python stdlib `http.server` + Pillow, under 300 lines per
 script):

@@ -67,8 +67,8 @@ class EndToEnd(unittest.TestCase):
         self.publish("alice.brief")
         first = self.dev.wake("boot")
         self.assertEqual((first["frame"], first["card"], first["sleep_s"]), ("drawn", "alice.brief", 1800))
-        img = Image.open(os.path.join(self.state, "screen.png"))
-        self.assertEqual((img.size, img.mode), ((800, 480), "1"))
+        with Image.open(os.path.join(self.state, "screen.png")) as img:
+            self.assertEqual((img.size, img.mode), ((800, 480), "1"))
         self.assertEqual(self.dev.wake("timer")["frame"], "kept")
         self.assertEqual(self.dev.nvs["frames"], 1)
 

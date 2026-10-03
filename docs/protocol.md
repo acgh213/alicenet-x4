@@ -42,14 +42,16 @@ Responses:
 - `200 OK`, `Content-Type: image/x-portable-bitmap`: a **P4 PBM, 800×480 exactly**, 48,000-byte
   raster after the header. PBM bit 1 = black; the device inverts into FreeInkDisplay's
   1 = white buffer. Headers:
-  - `ETag: "<card-revision>"`
+  - `ETag: "<sha256 of the PBM, 16 hex>"`: content-addressed, so the staleness marker or a
+    re-render changes it but an identical republish doesn't
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
   - `X-Card: weather.today`: the current card id, echoed back with events
-  - `X-Card-Actions: ack,next,prev,choose_a,choose_b`: which buttons mean something on this card
+  - `X-Card-Actions: confirm,confirm_long,down`: buttons this card assigned (subset of
+    `confirm, confirm_long, back, up, down`; Left/Right always page the deck)
   - `X-Next-Poll: 900`: seconds; the device clamps it to [300, 21600]
-  - `X-Session: 30`: stay awake N seconds after rendering (0 = sleep immediately). Used for
-    "hold" cards that expect an answer.
+  - `X-Session: 30`: stay awake N seconds after rendering (0 = sleep immediately). x4d sends
+    `session_s` for cards that assigned any action, 0 otherwise.
 - `204 No Content`: nothing to show yet (fresh device). Keep the status screen.
 - `401`: bad token. The device shows a local "not provisioned" screen and drops to pocket mode.
 - Any other error or timeout: keep the screen, mark "sync ✗", back off (×2 up to 6 h).
@@ -120,5 +122,7 @@ it**, then show "provisioned x4-01". CrossInk stores its own Wi-Fi credentials i
   to the X4 means "shown at the device's next wake", not now. `status` reports
   `last_seen`, `last_wake`, `battery` (as reported by the device, stale-flagged), and
   `pending_events`.
-- Events forwarded to Muse read like `"[x4] Cassie pressed Confirm on 'weather.today' (r12)"`.
+- Agents publish with `x4ctl` (`gateway/x4ctl.py`), which talks to `POST /x4/v1/agent`
+  (separate agent token). Only presses of a button the card assigned are forwarded, as
+  `[x4] Cassie pressed confirm (short) = 'yes' on 'alice.q'`.
   Left/Right/Back navigation stays inside x4d.

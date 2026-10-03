@@ -1,0 +1,14 @@
+[Unit]
+Description=x4d - Alicenet gateway for Xteink X4 endpoints
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/alicenet-x4/gateway
+ExecStart=/usr/bin/python3 %h/projects/alicenet-x4/gateway/x4d.py %h/.config/x4d/x4d.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

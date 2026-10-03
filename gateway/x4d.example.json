@@ -1,0 +1,14 @@
+{
+  "listen": "192.168.18.61:8787",
+  "db": "/home/cassie/.local/state/x4d/x4.db",
+  "allow": ["192.168.18.0/24", "127.0.0.0/8"],
+  "tz": "America/New_York",
+  "dwell_s": 3600,
+  "poll_s": 1800,
+  "session_s": 30,
+  "devices": {
+    "x4-01": "<sha256 hex of the device token; the token itself only goes on the SD card>"
+  },
+  "agent_token_sha256": "<sha256 hex of the agent token in ~/.config/x4ctl/config.json>",
+  "forward_cmd": ["/usr/local/bin/musegadget", "send-user-msg"]
+}
