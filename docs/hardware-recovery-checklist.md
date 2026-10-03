@@ -15,16 +15,36 @@ firmware introduces.
   CrossInk, Escape Hatch and the OpenX4 sample.
 - [x] **How it was flashed:** the online web flasher (Cassie, 2026-10-03). Which slot it wrote
   is still unknown, so read otadata from the live device (step B).
-- [ ] **Which OTA slot is active.** Determine it read-only (step B).
+- [x] **Which OTA slot is active: ota_0** (read from the device by Eido, 2026-10-03; otadata
+  seq 3 / 2, both VALID; sha256 of the 8 KB read `3a3dd76b…16bc`). Since seq went 2 → 3 (a
+  proper OTA switch) rather than being reset by an erased otadata blob, the most likely story
+  is: the old CrossInk 1.3.4-tiny ran in ota_1 and updated itself into ota_0. **ota_1 therefore
+  probably still holds an older CrossInk.** That's inferred, not read. Confirm with a 256-byte
+  read of each slot's header (step B).
+- [x] **Chip and lock state** (read-only, 2026-10-03):
+  - ESP32-C3 QFN32 rev v0.4, MAC 9c:cc:01:61:f2:30, 40 MHz crystal, USB-Serial/JTAG
+  - flash: manufacturer 0x85, device 0x2018, 16 MB
+  - partition table read from the device = sha256 `bd0f7954…f6ce`, matching the value
+    predicted from the build beforehand
+  - SECURE_BOOT_EN False, flash encryption off (SPI_BOOT_CRYPT_CNT disabled), SECURE_VERSION 0,
+    USB JTAG / USB-Serial-JTAG / download mode all enabled
+  - **Nothing is locked; USB flashing is available.**
+- [ ] **Panel controller:** still unknown. CrossInk's release build printed nothing in 25 s of
+  boot log, which is no signal rather than a negative. The step-2 "hello" build will log the
+  XTDET probe.
 - [x] **Backup file** (found by Eido, 2026-10-03), on Eido's PC:
   `C:\Users\Cassie\Downloads\flash.bin`, 16,777,216 B, 2026-06-29 21:43,
   sha256 `a54453281353feb5eb1d4c9433e19efe604a746fb878a8dd5c4ee90386caf30b`.
   `flash2.bin` (23:38 the same night) is byte-identical, so it's a verified double read.
   Its otadata is seq 1 / state UNDEFINED and seq 2 / state VALID, which selects **ota_1** at
-  backup time.
-  ⚠ **The backup predates CrossInk 1.5.1** (released 2026-09-11). It captures whatever ran in
-  June (probably stock or an early CrossPoint), *not* the current CrossInk install. Restoring it
-  goes back to that state; to get back to CrossInk afterwards, re-run the web flasher.
+  backup time. Contents (inspector run by Eido):
+  - **app0** is ESP-IDF v4.4.7 arduino-lib-builder, built Mar 5 2024, SHA trailer valid. This
+    is almost certainly the **Xteink stock firmware**, so the backup preserves the factory image.
+  - **app1** is CrossInk 1.3.4-tiny (IDF v5.5.2, built Feb 11 2026), the one active at backup
+    time.
+  ⚠ **The backup does not match the current device.** It predates the update to 1.5.1, and the
+  device now boots ota_0. Restoring it means going back to June: CrossInk 1.3.4-tiny active,
+  stock firmware in the other slot. Don't diff the live device against it.
 - Physical: the reset button is just below the USB port, bottom-left with the screen facing you.
   Press-and-hold Power wakes it. In CrossInk, Wi-Fi joins in ~6–7 s.
 

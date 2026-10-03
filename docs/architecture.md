@@ -123,12 +123,14 @@ If your X4 has a UC8179 panel, community-sdk simply wouldn't drive it.
 
 **Turn the X4 into a dedicated Alicenet appliance (option 3), dual-booted with CrossInk.**
 
-- **ota slot A: CrossInk 1.5.1, untouched.** It's your reader *and* your SD flasher.
-- **ota slot B: alicenet-x4**, a small freeink-sdk firmware structured like Escape Hatch.
-- **Switching:** hold **Back+Up while waking** in alicenet-x4 to boot the other slot (we write
-  a two-slot version of `checkBootCombo`; the SDK one is hardwired to ota_0). From CrossInk,
-  **Up+Power** opens its SD picker, which flashes `alicenet-x4.bin` into the *other* slot and
-  boots it.
+- **ota_0: CrossInk 1.5.1, untouched** (read from the device 2026-10-03: otadata selects
+  ota_0). It's your reader *and* your SD flasher.
+- **ota_1: alicenet-x4.** This overwrites whatever is left in ota_1, probably the old CrossInk
+  1.3.4-tiny. Nothing is lost: that build is on GitHub and in the June backup.
+- **Switching:** hold **Back+Up while waking** in alicenet-x4 to get back to CrossInk. Because
+  CrossInk sits in ota_0, the SDK's stock `freeink::recovery::checkBootCombo()` does exactly this
+  unmodified; no two-slot variant needed. From CrossInk, **Up+Power** opens its SD picker, which
+  flashes `alicenet-x4.bin` into ota_1 and boots it.
 - **Updating alicenet-x4:** combo into CrossInk → Up+Power → pick the new `.bin`. The flasher
   always targets the slot it isn't running from, which is ours. Before writing, it validates
   checksum, SHA-256, size and board tag. We embed `CROSSPOINT-BOARD-V1:x4;`.

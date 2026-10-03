@@ -39,7 +39,8 @@ script):
 `~/projects/alicenet-x4/firmware/`, laid out like Escape Hatch, with freeink-sdk as a submodule
 **pinned** to a specific commit.
 
-- `setup()`: `checkBootCombo` (two-slot version: Back+Up → other slot) → `holdPowerRails()` →
+- `setup()`: `freeink::recovery::checkBootCombo()` (stock SDK; Back+Up → ota_0 = CrossInk) →
+  `holdPowerRails()` →
   display init (controller probe) → draw the status screen into the framebuffer with the SDK's
   built-in font → HALF refresh.
 - Power long → pocket sleep. This copies CrossInk's latch-LOW path verbatim.
