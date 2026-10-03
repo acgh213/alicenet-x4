@@ -1,0 +1,5 @@
+refs/
+artifacts/
+__pycache__/
+*.bin
+.pio/
