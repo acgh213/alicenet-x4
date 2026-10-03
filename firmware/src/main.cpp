@@ -32,6 +32,7 @@
 #include <esp_mac.h>
 
 #include "http_line.h"
+#include "json_out.h"
 #include "x4_secrets.h"
 
 #include <cstdio>
@@ -102,6 +103,19 @@ void drawDeviceStatus() {
   const BatteryMonitor::Status st = battery.readStatus();
   snprintf(line, sizeof line, "%u%% %.2fV", st.percentage, st.millivolts / 1000.0);
   text(640, 0, 156, line, false, ui::TextAlign::Right);
+}
+
+// Device-owned top-right corner: after a press, show "<button> sent" (or why
+// it wasn't) with a fast partial refresh, so the person holding the X4 can see
+// the press landed without waiting for the gateway to change the card.
+void showReceipt(const char* button, const char* result) {
+  if (!g_target) return;
+  // Stay inside x4d's reserved white corner (x 640..800, y 0..28).
+  g_target->fill(ui::Rect{640, 0, 160, 30}, ui::Paint::solid(ui::Color::White));
+  char line[40];
+  snprintf(line, sizeof line, "%s %s", button, result);
+  text(640, 0, 156, line, false, ui::TextAlign::Right);
+  display.displayBuffer(EInkDisplay::FAST_REFRESH);
 }
 
 int base64Value(char c) {
@@ -314,27 +328,30 @@ bool fetchFrame(const char* wake) {
 bool postEvent(uint8_t button, const char* press, const char* wake) {
   if (!g_wifi || button > InputManager::BTN_DOWN) return false;
   const uint32_t eventSeq = g_seq + 1;
-  char cardJson[80] = "null";
-  char etagJson[96] = "null";
-  if (g_card[0]) snprintf(cardJson, sizeof cardJson, "\"%s\"", g_card);
-  if (g_etag[0]) snprintf(etagJson, sizeof etagJson, "\"%s\"", g_etag);
   char body[512];
-  const int length = snprintf(body, sizeof body,
-                              "{\"device\":\"%s\",\"boot\":%lu,\"events\":[{\"seq\":%lu,"
-                              "\"card\":%s,\"etag\":%s,\"button\":\"%s\",\"press\":\"%s\","
-                              "\"wake\":\"%s\"}]}",
-                              X4_DEVICE_ID, static_cast<unsigned long>(g_boot), static_cast<unsigned long>(eventSeq),
-                              cardJson, etagJson, kButtonNames[button], press, wake);
-  if (length <= 0 || static_cast<size_t>(length) >= sizeof body) return false;
+  const int length = x4json::eventBody(body, sizeof body, X4_DEVICE_ID, static_cast<unsigned long>(g_boot),
+                                       static_cast<unsigned long>(eventSeq), g_card, g_etag, kButtonNames[button],
+                                       press, wake);
+  if (length < 0) {
+    showReceipt(kButtonNames[button], "too big");
+    return false;
+  }
   WiFiClient client;
   client.setTimeout(kHttpReadTimeoutMs);  // Stream timeout is in MILLISECONDS
-  if (!client.connect(X4_GATEWAY_HOST, X4_GATEWAY_PORT, kHttpConnectTimeoutMs)) return false;
+  if (!client.connect(X4_GATEWAY_HOST, X4_GATEWAY_PORT, kHttpConnectTimeoutMs)) {
+    showReceipt(kButtonNames[button], "no link");
+    return false;
+  }
   client.printf("POST /x4/v1/events HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
                 "Content-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
                 X4_GATEWAY_HOST, X4_DEVICE_TOKEN, length, body);
   char line[192];
-  if (!readHttpLine(client, line, sizeof line) || x4http::statusCode(line) != 200) {
+  const int status = readHttpLine(client, line, sizeof line) ? x4http::statusCode(line) : -1;
+  if (status != 200) {
     client.stop();
+    char why[16];
+    snprintf(why, sizeof why, "HTTP %d", status);
+    showReceipt(kButtonNames[button], why);
     return false;
   }
   bool frameChanged = false;
@@ -347,6 +364,7 @@ bool postEvent(uint8_t button, const char* press, const char* wake) {
   client.stop();
   Serial.printf("[x4] event #%lu %s %s\n", static_cast<unsigned long>(g_seq), kButtonNames[button], press);
   if (frameChanged) fetchFrame("session");
+  else showReceipt(kButtonNames[button], "sent");
   return true;
 }
 
