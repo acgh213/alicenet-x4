@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh X4 glance data from the existing clock weather/calendar sources
+[Service]
+Type=oneshot
+WorkingDirectory=/home/cassie/projects/alicenet-x4/gateway
+ExecStart=/usr/bin/env -u PYTHONPATH -u PYTHONHOME /home/cassie/.hermes/hermes-agent/venv/bin/python /home/cassie/projects/alicenet-x4/gateway/x4_sources.py
+TimeoutStartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict

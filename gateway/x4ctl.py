@@ -108,6 +108,8 @@ def _parser():
     s.add_argument("--stdin", action="store_true", help="Read the body from stdin.")
     s.add_argument("--line", action="append", help="One literal body line. Repeatable.")
     s.add_argument("text", nargs="?")
+    for name in ('home','weather','agenda','refresh','glance'):
+        sub.add_parser(name, help='Control the built-in glance dashboard.').add_argument('--device',default='x4-01')
     sub.add_parser("slides")
     sub.add_parser("slide-get").add_argument("id")
     sub.add_parser("slide-remove").add_argument("id")
@@ -138,6 +140,8 @@ def _slide_request(args):
 
 
 def _request(args):
+    if args.cmd in ('home','weather','agenda','refresh','glance'):
+        return {'action':'glance','op':'status' if args.cmd=='glance' else args.cmd,'device':args.device}
     if args.cmd == "slide":
         return _slide_request(args)
     if args.cmd == "request":

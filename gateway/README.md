@@ -1,54 +1,91 @@
-# gateway: x4d, x4ctl and the fake device
+# X4 gateway and glance dashboard
 
-This is step 1 of `docs/vertical-slice-plan.md`: everything on the Alicenet side, plus a stand-in
-device. No hardware is involved. Stdlib + Pillow, Python ≥ 3.11.
+The deployed X4 surface is a **built-in glance dashboard**, not an agent-card carousel.
+It pulls the same configured Home Assistant weather and consented calendar sources as
+`clockctl`, using `/home/cassie/services/clock-control/clock_feeds.py` and the existing
+private feed config. The X4 never receives HA credentials or calendar descriptions/locations.
 
-- `x4_protocol.py`: the card contract. It follows clockctl's slide shape with 800×480 limits
-  and adds per-card `actions`.
-- `x4_render.py`: renders a card to a 1-bit 800×480 image and packs it into a P4 PBM.
-- `x4_store.py`: SQLite store for the deck, rotation/hold, devices, and button events (dedupe + forward state).
-- `x4d.py`: the HTTP gateway. The device pulls frames and posts events; agents publish cards.
-  The wire spec is `docs/protocol.md`.
-- `x4ctl.py`: the agent CLI, with clockctl's verbs.
-- `fake_x4.py`: runs the firmware's wake sequence, using a JSON file as its NVS and PNGs as its panel.
+## Controls
 
-## For agents: publishing a card
+- Left/Right: Home → Weather → Agenda, wrapping in either direction.
+- Back: Home.
+- Agenda Up/Down: five-item pages.
+- Short Confirm: ask real Muse on Alicenet for a concise briefing using source context.
+- Long Confirm (700 ms): locally refresh the existing sources; not a Muse message.
+- Firmware interaction window: 120 seconds since activity. Ambient sleep keeps the
+  image visible; the gateway schedules another pull in ten minutes.
+- Fresh Power hold: manual off. Power wake is ignored until released so it cannot
+  immediately switch the device off again.
 
-```sh
-x4ctl slide --id alice.brief --owner alice --avatar alice --title "Saturday evening" \
-  "Clear tonight, low 48°F.\nTomorrow: sun, high 63°F."
-```
+The clock is explicitly **sampled, not live**. Source observation age and retrieval
+age are distinct. Cached refresh failures, stale data, unavailable sources and an
+available calendar with zero events are separate states. No guessed forecasts.
 
-- **Line breaks**: in TEXT, a literal `\n` becomes a break, so it never shows up on screen. `--stdin`
-  takes real newlines. `--line` (repeatable) is literal, which is useful when a line really contains a
-  backslash.
-- **Avatar**: `none`, `alice`, `pyrrha`, `muse`, or any local PNG/JPEG. Images are
-  downscaled to 32×32 1-bit, transparency counts as white, and they're drawn at 96×96.
-- **Buttons**: `--action confirm=yes --action down=later`. You can assign `confirm`,
-  `confirm_long`, `back`, `up` and `down`. A press arrives in Muse as
-  `[x4] Cassie pressed confirm (short) = 'yes' on 'alice.q'`. Left/Right always page the deck
-  and are never forwarded. A card with actions keeps the device awake for 30 s after drawing.
-- **Delivery is honest**: `"delivery": "next_wake"` means the card is stored and will be shown
-  the next time the X4 wakes. That's up to `poll_s` (default 30 min) unless someone presses a
-  button. Use `--intent next` to be shown first at the next wake, or `--intent hold --hold-s N`
-  to pin a card.
-- **Too much text is an error, not clipping**: the body shrinks from 40 px to 18 px to fit, and
-  if it still doesn't fit, the publish fails with a message telling you to shorten it.
-- `x4ctl preview --output p.png < request.json` renders locally without touching x4d.
-- `x4ctl status` shows device battery, RSSI, last wake and pending forwards. Use it to tell
-  whether the X4 is actually alive.
+## Use through clockctl
 
-## Run the tests
+On Alicenet, the installed `/home/cassie/.local/bin/clockctl` dispatches `x4` commands
+without touching the Pi Zero display endpoint:
 
 ```sh
-python3 -W error::ResourceWarning -m unittest test_x4ctl test_fake_x4 test_x4d test_x4_store test_x4_render test_x4_protocol
+/home/cassie/.local/bin/clockctl x4 home
+/home/cassie/.local/bin/clockctl x4 weather
+/home/cassie/.local/bin/clockctl x4 agenda
+/home/cassie/.local/bin/clockctl x4 refresh
+/home/cassie/.local/bin/clockctl x4 glance
+/home/cassie/.local/bin/clockctl x4 status
+/home/cassie/.local/bin/clockctl x4 events --limit 10
 ```
 
-## Run it for real (once there's a device)
+`glance` reports the chosen page/offset. `status` reports last actual device contact,
+firmware, RSSI, battery and pending forwarding. A successful command changes gateway
+state; `delivery: next_wake` does not establish that the X4 has displayed it yet.
+Direct `gateway/x4ctl.py` supports the same verbs. Private client config is
+`~/.config/x4ctl/config.json`; preserve mode 0600 and never print its token.
 
-1. Copy `x4d.example.json` to `~/.config/x4d/x4d.json`. Generate two tokens with
-   `python3 -c 'import secrets; print(secrets.token_hex(32))'`, and store **only their sha256**
-   in the config.
-2. Put the agent token in `~/.config/x4ctl/config.json`. The device token goes in the SD
-   `/alicenet/device.json` file (see `docs/protocol.md` § Provisioning).
-3. `cp x4d.service ~/.config/systemd/user/ && systemctl --user enable --now x4d`.
+## Deployed services and data
+
+- `x4d.service`: systemd user gateway, `192.168.18.61:8787`, bearer authentication
+  and allowed-LAN checks; `~/.config/x4d/x4d.json`.
+- `x4-glance-feeds.timer`: refreshes sources every ten minutes through the existing
+  HA client and feed consent rules. The source snapshot is atomically replaced,
+  mode 0600, at `~/.local/state/x4d/glance.json`.
+- `glance_snapshot`: gateway config selects this dashboard instead of legacy slides.
+- `refresh_cmd`: explicit command argv for on-demand source collection.
+- `forward_cmd`: explicit argv invoking `x4_forward.py`; SSH stdin carries the
+  message to Alicenet's existing `musegadget send-user-msg -` socket client,
+  without sudo or shell interpolation. Provider acceptance is not human consumption.
+- Events and per-device page selection persist in `~/.local/state/x4d/x4.db`.
+  Navigation/refresh are local; only assigned short Confirm requests are forwarded.
+
+Glance PNG preview: authenticated agent GET `/x4/v1/glance.png?page=home` (also
+`weather`/`agenda`). Device GET `/x4/v1/frame` returns exact 800×480 P4 PBM.
+304 replies retain ETag/card/action/session/poll headers. Events are deduplicated
+by device, boot and sequence.
+
+## Build/test
+
+Python ≥ 3.11, stdlib and Pillow; source collector also uses the installed clock
+feed dependencies and dotenv. From repository root:
+
+```sh
+env -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 -W error::ResourceWarning \
+  -m unittest discover -s gateway -p 'test_*.py'
+```
+
+Renderer tests audit one-bit dimensions, text bounds/non-overlap, reserved device
+status corner, long titles, privacy exclusions, stale/unavailable/empty states,
+weather zeros, sampling honesty and pagination. HTTP tests exercise built-in
+page precedence, navigation dedupe, authentication and Muse/local action separation.
+Host tests are not physical panel or sleep-current measurements.
+
+Firmware build/install instructions and pending battery sleep gates:
+[`../firmware/README.md`](../firmware/README.md). Preserve CrossInk in ota_0;
+install the application image via **CrossInk Settings → SD Firmware Update** only.
+
+## Legacy agent cards
+
+The card API remains available for tooling/tests (`slide`, `slides`, `slide-get`,
+`slide-remove`, `preview`), but publishing a card **cannot displace glance pages**
+while `glance_snapshot` is configured. Do not publish extra agent notes expecting
+this device to show them. The standalone fake device remains useful for protocol
+regressions; it is not evidence of physical X4 behavior.

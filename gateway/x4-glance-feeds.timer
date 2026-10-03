@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep X4 glance snapshot current
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=10min
+Persistent=true
+Unit=x4-glance-feeds.service
+[Install]
+WantedBy=timers.target

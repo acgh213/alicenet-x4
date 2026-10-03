@@ -188,7 +188,7 @@ def render_snapshot(snapshot, page="home", now=None, tz=None, *, offset=0):
         raise ValueError(f"Unknown dashboard page: {page}")
     tz = tz or ZoneInfo("America/New_York")
     now = dt.datetime.now(tz).timestamp() if now is None else now
-    stamp = dt.datetime.fromtimestamp(now, tz)
+    stamp = dt.datetime.fromtimestamp(snapshot.get('display_at') or snapshot.get('observed_at') or now, tz)
     weather, calendar = snapshot.get("weather", {}), snapshot.get("calendar", {})
     image = Image.new("1", (800, 480), 1)
     image.info["layout"] = []

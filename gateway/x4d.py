@@ -46,6 +46,12 @@ class App:
         self.tz = zoneinfo.ZoneInfo(cfg.get("tz", "America/New_York"))
         self.changed = threading.Condition()
         self.generation = 0
+        self.forward_lock = threading.Lock()
+        self.refresh_lock = threading.Lock()
+        self.glance = None
+        if cfg.get('glance_snapshot'):
+            from x4_glance import Glance
+            self.glance = Glance(self.store, cfg['glance_snapshot'])
 
     def bump(self):
         with self.changed:
@@ -67,7 +73,9 @@ class App:
         img = x4_render.render_slide(entry["slide"], updated_at=entry["updated_at"], now=now, tz=self.tz)
         return x4_render.to_pbm(img)
 
-    def frame(self, wake, now):
+    def frame(self, wake, now, device='x4-01'):
+        if self.glance:
+            return self.glance.frame(device,now,self.tz,self.cfg.get('session_s',120))
         entry = self.store.current(now=now, wake=wake)
         if entry is None:
             return None
@@ -79,6 +87,16 @@ class App:
     def agent(self, request, now):
         req = x4_protocol.validate(request)
         action = req["action"]
+        if action == 'glance':
+            if not self.glance:
+                raise ValueError('glance dashboard is not configured')
+            op,device=req['op'],req['device']
+            if op=='refresh':
+                self.refresh_sources()
+            elif op!='status':
+                self.glance.select(device,op)
+                self.bump()
+            return {'result':self.glance.state(device), 'delivery':'next_wake'}
         if action == "slide_put":
             self.render({"slide": req["slide"], "updated_at": now}, now)  # unrenderable -> ValueError, not stored
             entry = self.store.put(req, now=now)
@@ -95,17 +113,42 @@ class App:
         if action == "events":
             return {"result": self.store.events(limit=req["limit"])}
         if action == "status":
-            return {"result": self.store.status(now=now)}
+            status=self.store.status(now=now)
+            status['mode']='glance' if self.glance else 'cards'
+            if self.glance:
+                status['glance']={d:self.glance.state(d) for d in status['devices']}
+            return {"result": status}
         return {"result": x4_protocol.capabilities()}
 
+    def refresh_sources(self):
+        cmd=self.cfg.get('refresh_cmd')
+        if not cmd:
+            return False
+        if not self.refresh_lock.acquire(blocking=False):
+            return False
+        try:
+            ok=subprocess.run(list(cmd),timeout=20,capture_output=True).returncode==0
+            if ok: self.bump()
+            return ok
+        except (OSError,subprocess.TimeoutExpired):
+            return False
+        finally:
+            self.refresh_lock.release()
+
     def forward_once(self):
+        # HTTP worker and retry thread must not send the same row concurrently.
+        with self.forward_lock:
+            return self._forward_once()
+
+    def _forward_once(self):
         """Send pending assigned-button events to Muse via the configured command."""
         cmd = self.cfg.get("forward_cmd")
         if not cmd:
             return 0
         sent = 0
         for ev in self.store.pending_forwards():
-            text = f"[x4] Cassie pressed {ev['button']} ({ev['press']}) = '{ev['label']}' on '{ev['card']}'"
+            text = (self.glance.forward_context(ev) if self.glance and ev['card'] in self.glance.action_labels()
+                    else f"[x4] Cassie pressed {ev['button']} ({ev['press']}) = '{ev['label']}' on '{ev['card']}'")
             try:
                 ok = subprocess.run(list(cmd) + [text], timeout=30, capture_output=True).returncode == 0
             except (OSError, subprocess.TimeoutExpired):
@@ -160,6 +203,16 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == "/x4/v1/frame":
             return self._frame(parse_qs(url.query))
+        if url.path == '/x4/v1/glance.png':
+            if not self.app.is_agent(self._token()): return self._send(401)
+            if not self.app.glance: return self._send(404)
+            from x4_dashboard import render_snapshot
+            query=parse_qs(url.query)
+            page=(query.get('page') or ['home'])[0]
+            if page not in ('home','weather','agenda'): return self._send(400)
+            out=io.BytesIO()
+            render_snapshot(self.app.glance.snapshot(),page=page,now=time.time(),tz=self.app.tz).save(out,'PNG')
+            return self._send(200,out.getvalue(),'image/png')
         if url.path == "/x4/v1/preview.png":
             return self._preview(parse_qs(url.query))
         self._json(404, {"ok": False, "error": "not found"})
@@ -194,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
         while True:
             with self.app.changed:
                 generation = self.app.generation
-            frame = self.app.frame(wake if not wait else "session", time.time())
+            frame = self.app.frame(wake if not wait else "session", time.time(), device=device)
             if frame is None and not wait:
                 return self._send(204)
             if frame is not None and frame["etag"] != known:
@@ -221,10 +274,16 @@ class Handler(BaseHTTPRequestHandler):
         if batch["device"] != device:
             return self._json(403, {"ok": False, "error": "device does not match token"})
         now = time.time()
-        new = self.app.store.record_events(batch, now=now)
+        new = self.app.store.record_events(batch, now=now,
+                  action_labels=self.app.glance.action_labels() if self.app.glance else None)
         moved = False
         for ev in new:
-            if ev["button"] in NAVIGATION and ev["press"] == "short":
+            if self.app.glance:
+                moved = self.app.glance.navigate(device,ev['button'],ev['press']) or moved
+                if ev['button']=='confirm' and ev['press']=='long':
+                    # Keep the HTTP acknowledgement fast; collection may take seconds.
+                    threading.Thread(target=self.app.refresh_sources,daemon=True).start()
+            elif ev["button"] in NAVIGATION and ev["press"] == "short":
                 self.app.store.navigate(NAVIGATION[ev["button"]], now=now)
                 moved = True
         if moved:

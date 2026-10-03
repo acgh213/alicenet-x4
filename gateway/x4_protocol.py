@@ -154,6 +154,12 @@ def validate(request):
     if type(request) is not dict:
         raise ValueError("request must be an object.")
     action = request.get("action")
+    if action == 'glance':
+        _exact(request, {'action','op','device'}, action, required=('op',))
+        if request['op'] not in ('status','refresh','home','weather','agenda'):
+            raise ValueError('unknown glance operation')
+        return {'action':'glance','op':request['op'],
+                'device':_ident(request.get('device','x4-01'),'device',_DEVICE)}
     if action == "slide_put":
         return _slide_put(request)
     if action in ("slide_get", "slide_remove"):

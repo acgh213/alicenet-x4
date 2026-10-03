@@ -69,6 +69,18 @@ class Dashboard(unittest.TestCase):
         for expected in ("10:30", "AM", "Saturday October 3", "SAMPLED", "NOT LIVE", "Long walk", "Reading hour", "Studio day"):
             self.assertIn(expected, text)
 
+    def test_sample_time_stays_fixed_while_source_age_advances(self):
+        snapshot = fixture()
+        snapshot['display_at'] = NOW
+        later = NOW + 3600
+        image = self.renderer.render_snapshot(snapshot, now=later, tz=TZ)
+        text = self.texts(image)
+        self.assertIn('10:30', text)
+        self.assertNotIn('11:30', text)
+        self.assertIn('STALE', text)
+        self.assertIn('Checked 1h ago', text)
+        self.assert_layout(image)
+
     def test_empty_is_not_unavailable_or_stale(self):
         snapshot = fixture()
         snapshot["calendar"]["events"] = []
