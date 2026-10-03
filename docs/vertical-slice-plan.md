@@ -115,7 +115,7 @@ Already known from Cassie (2026-10-03):
   bottom-left.
 
 Still needed:
-1. **Panel controller**: SSD1677 / UC8179 / UC8279_X4, from the step 2 serial log.
+1. ~~Panel controller~~ → **SSD1677** (2026-10-03, `drill-log.md`).
 2. **Deep-sleep floor current with the latch held, on battery.** It decides the poll interval.
    Crude method without opening the case: a build that wakes every 10 min, logs battery mV to
    NVS, runs 48 h, then compare against the drop with the latch released. Better method: an
@@ -124,7 +124,8 @@ Still needed:
 4. HALF/FULL refresh duration and visible ghosting after N FAST updates at 800×480.
 5. Whether a power-button press wakes the device from latch-held deep sleep on battery
    (the rail is already up, so it should act as a plain GPIO3 wake). This is unproven.
-6. This unit's ADC ladder readings vs the SDK's averages.
+6. ~~This unit's ADC ladder readings~~ → 2–3 % below the SDK averages, all inside the stock
+   windows (2026-10-03, `drill-log.md`).
 7. Whether this hardware revision self-latches (BoardConfig mentions a field revision that
    doesn't).
 8. Where the reset button is, and how it behaves on USB vs battery.

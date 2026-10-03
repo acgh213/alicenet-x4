@@ -29,9 +29,9 @@ firmware introduces.
   - SECURE_BOOT_EN False, flash encryption off (SPI_BOOT_CRYPT_CNT disabled), SECURE_VERSION 0,
     USB JTAG / USB-Serial-JTAG / download mode all enabled
   - **Nothing is locked; USB flashing is available.**
-- [ ] **Panel controller:** still unknown. CrossInk's release build printed nothing in 25 s of
-  boot log, which is no signal rather than a negative. The step-2 "hello" build will log the
-  XTDET probe.
+- [x] **Panel controller: original SSD1677** (Escape Hatch Hardware Detect, 2026-10-03:
+  VER FF×5, FLG FF → no UltraChip answered; the SSD1677 driver draws correctly). See
+  `drill-log.md`.
 - [x] **Backup file** (found by Eido, 2026-10-03), on Eido's PC:
   `C:\Users\Cassie\Downloads\flash.bin`, 16,777,216 B, 2026-06-29 21:43,
   sha256 `a54453281353feb5eb1d4c9433e19efe604a746fb878a8dd5c4ee90386caf30b`.
