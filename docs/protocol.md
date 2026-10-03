@@ -86,7 +86,7 @@ the radio is already up.
 
 ## Wake sequence (device)
 
-1. `checkBootCombo` (Back+Up → other slot). Then `holdPowerRails()`.
+1. `checkBootCombo` (Back+Up → ota_0, i.e. CrossInk). Then `holdPowerRails()`.
 2. Read the wake cause and battery. If below 3.45 V: draw "low battery, Alicenet paused" once
    (if not already drawn), enter pocket mode, stop.
 3. Wi-Fi join using the cached BSSID/channel, with an 8 s deadline. On failure, increment

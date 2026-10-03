@@ -199,7 +199,7 @@ fiddly on the C3, and it still costs mA-class average current.
 | Confirm long | secondary action | forwarded |
 | Back | dismiss / home card | forwarded only if the card asks |
 | Up / Down | context choice (A/B), scroll | card-defined |
-| **Back+Up held during wake** | **boot the other slot (CrossInk)** | cross-ladder chord, device-local |
+| **Back+Up held during wake** | **boot ota_0 (CrossInk)** | cross-ladder chord, device-local |
 
 Long press: yes, via `getHeldTime`. Double press: possible, but it adds ~300 ms to every single
 press, so not in the slice. Chords only across ladders (Back/Confirm/Left/Right on GPIO1,
