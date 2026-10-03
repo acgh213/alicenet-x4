@@ -1,4 +1,4 @@
-# alicenet-x4 firmware — 0.3.0-ambient
+# alicenet-x4 firmware — 0.3.1-ambient
 
 ## Build and install safely
 
@@ -53,9 +53,15 @@ the other slot. Partitions, board tag and stock SDK Back+Up recovery are unchang
   `304` is accepted only for a frame authenticated in this wake. Offline/failed
   fetches leave the old physical panel alone, log that it may be stale, and do
   not draw receipts or submit actions against an unknown current-wake card.
-- Classified events use a bounded 32-entry queue. Overflow is logged. A failed
-  POST is not retried automatically; one classification is not a guarantee of
-  successful delivery through a network outage.
+- Classified events use a bounded 32-entry queue. Overflow is logged. Each
+  distinct dequeued navigation event reserves and persists a unique sequence
+  **before** any network attempt (including offline/card-rejected events).
+  A failed or lost-ACK POST burns that sequence; the next press gets a new one,
+  never an alias of the event the server may already have committed. Persistence
+  failure or counter exhaustion vetoes sending. A failed POST is not retried
+  automatically: events can be lost, and an ambiguous timeout can mean the
+  action was committed despite an error receipt. This MVP guarantees distinct
+  identities, not reliable delivery; it has no persistent event outbox.
 
 `src/x4_secrets.h` is local deployment configuration and is not committed.
 
@@ -64,7 +70,7 @@ the other slot. Partitions, board tag and stock SDK Back+Up recovery are unchang
 From `firmware/` (put test executables in the configured scratch directory):
 
 ```sh
-for test in ambient bounded_http http_line json_out; do
+for test in ambient bounded_http http_line json_out wifi_password event_sequence; do
   g++ -std=c++17 -Wall -Wextra -Werror -Isrc "test_host/test_${test}.cpp" \
     -o "$TMPDIR/x4-test-$test"
   (cd test_host && "$TMPDIR/x4-test-$test") || exit 1
@@ -74,7 +80,10 @@ env -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 -m unittest discover -s test_ho
 
 The pure helper tests cover Confirm threshold/release/duplicate suppression,
 wake Power suppression, inactivity extension/rollover, sleep policy, panel
-validity, and bounded HTTP reads/writes (stall, EOF, overflow and partial write).
+validity, bounded HTTP reads/writes (stall, EOF, overflow and partial write),
+synthetic CrossInk validated credentials (roundtrip, corruption, wrong MAC and
+bounds), and durable event allocation (lost ACK then a new press, persistence
+failure and exhaustion).
 Wiring guards are source checks, not substitutes for device tests.
 
 ## Pending physical gates — not run for this release

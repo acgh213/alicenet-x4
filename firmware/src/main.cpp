@@ -25,6 +25,8 @@
 #include "bounded_http.h"
 #include "http_line.h"
 #include "json_out.h"
+#include "wifi_password.h"
+#include "event_sequence.h"
 #include "x4_secrets.h"
 
 #include <cstdio>
@@ -174,34 +176,6 @@ void showReceipt(const char* button, const char* result) {
   display.displayBuffer(EInkDisplay::FAST_REFRESH);
 }
 
-int base64Value(char c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == '+') return 62;
-  if (c == '/') return 63;
-  return -1;
-}
-
-size_t decodeBase64(const char* encoded, uint8_t* out, size_t cap) {
-  size_t count = 0;
-  int accumulator = 0;
-  int bits = 0;
-  for (const char* p = encoded; *p; ++p) {
-    if (*p == '=') break;
-    const int value = base64Value(*p);
-    if (value < 0) continue;
-    accumulator = (accumulator << 6) | value;
-    bits += 6;
-    while (bits >= 8) {
-      bits -= 8;
-      if (count >= cap) return 0;
-      out[count++] = static_cast<uint8_t>((accumulator >> bits) & 0xFF);
-    }
-  }
-  return count;
-}
-
 bool jsonField(const char* json, const char* key, char* out, size_t cap, const char** endOut = nullptr) {
   const char* start = strstr(json, key);
   if (!start) return false;
@@ -215,28 +189,10 @@ bool jsonField(const char* json, const char* key, char* out, size_t cap, const c
   return true;
 }
 
-uint32_t fnv1a(uint32_t hash, uint8_t byte) {
-  hash ^= byte;
-  return hash * 16777619UL;
-}
-
 bool decodeWifiPassword(const char* encoded, char* password, size_t cap) {
-  uint8_t payload[96];
-  const size_t length = decodeBase64(encoded, payload, sizeof payload);
-  if (length < 8 || memcmp(payload, "CPV1", 4) != 0) return false;
   uint8_t mac[6];
   esp_efuse_mac_get_default(mac);
-  for (size_t i = 0; i < length; ++i) payload[i] ^= mac[i % 6];
-  if (memcmp(payload, "CPV1", 4) != 0 || length < 8) return false;
-  uint32_t expected = static_cast<uint32_t>(payload[4]) | (static_cast<uint32_t>(payload[5]) << 8) |
-                      (static_cast<uint32_t>(payload[6]) << 16) | (static_cast<uint32_t>(payload[7]) << 24);
-  uint32_t actual = 2166136261UL;
-  for (size_t i = 0; i < 6; ++i) actual = fnv1a(actual, mac[i]);
-  for (size_t i = 8; i < length; ++i) actual = fnv1a(actual, payload[i]);
-  if (actual != expected || length - 8 >= cap) return false;
-  memcpy(password, payload + 8, length - 8);
-  password[length - 8] = '\0';
-  return true;
+  return x4wifi::decodeWifiPassword(encoded, mac, password, cap);
 }
 
 bool loadWifiCredential(char* ssid, size_t ssidCap, char* password, size_t passwordCap) {
@@ -390,11 +346,19 @@ bool fetchFrame(const char* wake) {
 }
 
 bool postEvent(uint8_t button, const char* press, const char* wake) {
-  if (!g_wifi || !g_panelState.conditional() || button > InputManager::BTN_DOWN) {
+  if (button > InputManager::BTN_DOWN) return false;
+  uint32_t eventSeq = 0;
+  if (!x4event::reserveDistinctEvent(g_seq, eventSeq, [](uint32_t value) {
+        return g_prefs.putULong("seq", value) == sizeof(value);
+      })) {
+    Serial.println("[x4] event not sent: sequence persistence failed or exhausted");
+    showReceipt(kButtonNames[button], "no seq");
+    return false;
+  }
+  if (!g_wifi || !g_panelState.conditional()) {
     Serial.println("[x4] event not sent: no authenticated current-wake card");
     return false;
   }
-  const uint32_t eventSeq = g_seq + 1;
   char body[512];
   const int length = x4json::eventBody(body, sizeof body, X4_DEVICE_ID, static_cast<unsigned long>(g_boot),
                                        static_cast<unsigned long>(eventSeq), g_card, g_etag, kButtonNames[button],
@@ -442,8 +406,6 @@ bool postEvent(uint8_t button, const char* press, const char* wake) {
     if (headerValue(line, "X-Frame-Changed", value, sizeof value)) frameChanged = atoi(value) != 0;
   }
   if (!headersComplete) { client.stop(); return false; }
-  g_seq = eventSeq;
-  g_prefs.putULong("seq", g_seq);
   client.stop();
   Serial.printf("[x4] event #%lu %s %s\n", static_cast<unsigned long>(g_seq), kButtonNames[button], press);
   if (frameChanged) { fetchFrame("session"); g_lastPoll = millis(); }

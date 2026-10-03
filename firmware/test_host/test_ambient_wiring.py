@@ -38,7 +38,19 @@ class AmbientWiring(unittest.TestCase):
         self.assertNotIn('client.printf(', SRC)
         fetch = SRC[SRC.index('bool fetchFrame('):SRC.index('bool postEvent(')]
         self.assertLess(fetch.index('readStart = millis()'), fetch.index('connectGateway('))
+    def test_validated_credential_uses_shared_helper(self):
+        decoder = SRC[SRC.index('bool decodeWifiPassword('):SRC.index('bool loadWifiCredential(')]
+        self.assertIn('x4wifi::decodeWifiPassword(encoded, mac, password, cap)', decoder)
+        self.assertIn('esp_efuse_mac_get_default(mac)', decoder)
+        self.assertNotIn('memcmp(payload', decoder)
+    def test_distinct_event_sequence_persisted_before_network(self):
+        event = SRC[SRC.index('bool postEvent('):SRC.index('const char* wakeName(')]
+        self.assertIn('x4event::reserveDistinctEvent', event)
+        self.assertIn('g_prefs.putULong("seq", value) == sizeof(value)', event)
+        self.assertLess(event.index('x4event::reserveDistinctEvent'), event.index('connectGateway('))
+        self.assertLess(event.index('x4event::reserveDistinctEvent'), event.index('if (!g_wifi'))
+        self.assertNotIn('g_seq = eventSeq', event)
     def test_release_version(self):
-        self.assertIn('0.3.0-ambient', INI)
+        self.assertIn('0.3.1-ambient', INI)
 if __name__ == '__main__':
     unittest.main()
