@@ -13,10 +13,20 @@ firmware introduces.
 - [x] Partition layout: standard X4 16 MB (nvs / otadata@0xe000 / app0@0x10000 /
   app1@0x650000, 0x640000 each / spiffs / coredump). Identical across CrossPoint,
   CrossInk, Escape Hatch and the OpenX4 sample.
-- [ ] **How it was flashed** (web flasher / esptool / CrossPoint OTA / SD)? → ask Cassie. This
-  determines which slot CrossInk is in.
+- [x] **How it was flashed:** the online web flasher (Cassie, 2026-10-03). Which slot it wrote
+  is still unknown, so read otadata from the live device (step B).
 - [ ] **Which OTA slot is active.** Determine it read-only (step B).
-- [ ] **Backup file location on Eido's PC:** `__________________` (sha256 `__________`).
+- [x] **Backup file** (found by Eido, 2026-10-03), on Eido's PC:
+  `C:\Users\Cassie\Downloads\flash.bin`, 16,777,216 B, 2026-06-29 21:43,
+  sha256 `a54453281353feb5eb1d4c9433e19efe604a746fb878a8dd5c4ee90386caf30b`.
+  `flash2.bin` (23:38 the same night) is byte-identical, so it's a verified double read.
+  Its otadata is seq 1 / state UNDEFINED and seq 2 / state VALID, which selects **ota_1** at
+  backup time.
+  ⚠ **The backup predates CrossInk 1.5.1** (released 2026-09-11). It captures whatever ran in
+  June (probably stock or an early CrossPoint), *not* the current CrossInk install. Restoring it
+  goes back to that state; to get back to CrossInk afterwards, re-run the web flasher.
+- Physical: the reset button is just below the USB port, bottom-left with the screen facing you.
+  Press-and-hold Power wakes it. In CrossInk, Wi-Fi joins in ~6–7 s.
 
 ## B. Read-only identification (USB, no writes)
 

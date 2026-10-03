@@ -97,6 +97,17 @@ script):
 
 ## Measurements that need the physical X4
 
+Already known from Cassie (2026-10-03):
+- Ghosting is noticeable in normal CrossInk use. This confirms the design choice of HALF on
+  every card change and big, high-contrast layouts. Consider a FULL refresh every N cards or
+  once per hour of ambient time.
+- CrossInk's Wi-Fi join takes ~6–7 s. That's a scan-and-join; caching BSSID/channel (and a
+  static IP) should beat it, but it sets the pessimistic energy figure: ~7 s × ~100 mA ≈
+  0.2 mAh per wake.
+- Press-and-hold Power wakes the device. The reset button is below the USB port,
+  bottom-left.
+
+Still needed:
 1. **Panel controller**: SSD1677 / UC8179 / UC8279_X4, from the step 2 serial log.
 2. **Deep-sleep floor current with the latch held, on battery.** It decides the poll interval.
    Crude method without opening the case: a build that wakes every 10 min, logs battery mV to
