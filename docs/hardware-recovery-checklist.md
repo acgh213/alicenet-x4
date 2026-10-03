@@ -107,6 +107,11 @@ the slot's offset.
 
 ## E. Recovery drill (must pass before any network code is trusted)
 
+**Superseded 2026-10-03 by `docs/drill-runbook.md`.** The drill now runs with an unmodified
+upstream Escape Hatch build, so the path in and out is proven with known-good code, and it
+reads the panel controller / ADC ladder for free. The original plan below is kept for
+reference.
+
 Using the "hello" build (vertical slice step 2):
 
 1. Copy `alicenet-x4.bin` to SD. In CrossInk: sleep → hold **Up** + press **Power** → pick the
