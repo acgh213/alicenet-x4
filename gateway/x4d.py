@@ -201,13 +201,17 @@ class Handler(BaseHTTPRequestHandler):
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return self._send(304) if frame else self._send(204)
+                # A 304 still tells the device how to behave around the card it
+                # already has: without X-Session it would sleep immediately.
+                return self._send(304, headers=self._frame_headers(frame)) if frame else self._send(204)
             with self.app.changed:
                 self.app.changed.wait_for(lambda: self.app.generation != generation, timeout=remaining)
-        headers = {"ETag": frame["etag"], "X-Card": frame["card"], "X-Card-Actions": ",".join(frame["actions"]),
-                   "X-Refresh": "half", "X-Next-Poll": self.app.cfg.get("poll_s", 900),
-                   "X-Session": frame["session"], "Cache-Control": "no-store"}
-        self._send(200, frame["pbm"], "image/x-portable-bitmap", headers)
+        self._send(200, frame["pbm"], "image/x-portable-bitmap", self._frame_headers(frame))
+
+    def _frame_headers(self, frame):
+        return {"ETag": frame["etag"], "X-Card": frame["card"], "X-Card-Actions": ",".join(frame["actions"]),
+                "X-Refresh": "half", "X-Next-Poll": self.app.cfg.get("poll_s", 900),
+                "X-Session": frame["session"], "Cache-Control": "no-store"}
 
     def _events(self):
         device = self.app.device_for(self._token())

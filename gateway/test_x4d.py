@@ -84,6 +84,18 @@ class Device(Server):
         again = self.call("GET", "/x4/v1/frame", headers={"If-None-Match": headers["ETag"]})
         self.assertEqual(again[0], 304)
 
+    def test_304_still_carries_card_session_and_poll(self):
+        self.publish("alice.brief", actions={"confirm": "ack"})
+        first = self.call("GET", "/x4/v1/frame")[1]
+        status, headers, body = self.call("GET", "/x4/v1/frame", headers={"If-None-Match": first["ETag"]})
+        self.assertEqual(status, 304)
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["ETag"], first["ETag"])
+        self.assertEqual(headers["X-Card"], "alice.brief")
+        self.assertEqual(headers["X-Card-Actions"], "confirm")
+        self.assertEqual(headers["X-Session"], "30")
+        self.assertEqual(headers["X-Next-Poll"], "900")
+
     def test_cards_without_actions_ask_for_no_session(self):
         self.publish("alice.brief")
         self.assertEqual(self.call("GET", "/x4/v1/frame")[1]["X-Session"], "0")
