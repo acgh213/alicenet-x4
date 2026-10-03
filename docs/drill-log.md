@@ -6,11 +6,12 @@ Image: `escape-hatch-x4.bin`, sha256 `d9ac08f8…4ce4` (upstream `122aaa5`, free
 
 | Step | Result |
 | --- | --- |
-| 1 Reject corrupt image | _not yet reported_ |
+| 1 Reject corrupt image | **PASS**: CrossInk refused `zz-corrupt-should-reject.bin` and stayed put |
 | 2 Flash Escape Hatch from CrossInk SD menu | **PASS**: booted to the Escape Hatch menu |
 | 3 Readings | **PASS**: see below |
-| 4 Back+Up → CrossInk | _pending_ |
+| 4 Back+Up → CrossInk | **PASS** (Cassie: "it will pop me there") |
 | 5 Re-flash → Boot Other Slot → CrossInk | _pending (optional)_ |
+| 6 Hello Power hold → deep sleep → Power wake | **PASS**: Cassie reports it works |
 
 ### Readings (Cassie, from the Escape Hatch screens)
 
@@ -35,6 +36,10 @@ Image: `escape-hatch-x4.bin`, sha256 `d9ac08f8…4ce4` (upstream `122aaa5`, free
 | Up | 2171 | 2242 | 1051 (to 1120) |
 | Down | 4 | 5 | 1116 |
 | Power | 4095 | n/a | separate digital GPIO, not on a ladder |
+
+**Hello firmware recheck:** Up 2168, Down 5, Right 4, Left 1454, Confirm 2618,
+Back 3423. The orientation arrow points toward the physical top edge. All six readings
+agree with the Escape Hatch calibration and remain comfortably inside the SDK windows.
 
 The unit reads ~2–3 % low across the board. That's consistent, and every button sits well
 inside the SDK's window, so **stock thresholds are fine**.
