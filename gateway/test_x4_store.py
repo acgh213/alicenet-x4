@@ -138,6 +138,14 @@ class Events(Base):
         self.store.mark_forwarded(pending[0]["rowid"], ok=True)
         self.assertEqual(self.store.pending_forwards(), [])
 
+    def test_long_confirm_maps_to_confirm_long_and_is_not_confused_with_short(self):
+        self.store.put(put("a.one", actions={"confirm": "ok", "confirm_long": "snooze"}), now=self.t)
+        batch = p.validate_events({"device": "x4-01", "boot": 1, "events": [
+            {"seq": 1, "card": "a.one", "button": "confirm", "press": "long"},
+            {"seq": 2, "card": "a.one", "button": "confirm", "press": "short"}]})
+        self.store.record_events(batch, now=self.t)
+        self.assertEqual([e["label"] for e in self.store.pending_forwards()], ["snooze", "ok"])
+
     def test_unassigned_presses_are_recorded_but_never_pending(self):
         self.store.record_events(self.batch(1, card=None), now=self.t)
         self.assertEqual(self.store.pending_forwards(), [])
