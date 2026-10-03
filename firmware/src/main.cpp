@@ -1,16 +1,4 @@
-// alicenet-x4 "hello" (vertical slice step 2): no network, no SD writes.
-//
-// Boots like Escape Hatch, draws one status screen, and measures what the later
-// steps depend on:
-//   * native orientation: which way is "up" for an 800x480 frame blitted raw
-//     (x4d sends exactly that), shown as an arrow + "TOP" label
-//   * refresh timings (FULL at boot, HALF/FAST on later redraws)
-//   * live button names + raw ADC
-// Exits:
-//   * Back+Up held at reset/wake -> ota_0 (CrossInk), via the stock SDK hatch
-//   * Hold Power 1.5 s           -> power off (CrossInk's C3 path: latch LOW)
-//   * 120 s with no input        -> same power off (never sits awake on battery)
-
+// alicenet-x4 ambient endpoint. SD updater/recovery remain the stock SDK path.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -30,13 +18,20 @@
 #include <esp_ota_ops.h>
 #include <esp_sleep.h>
 #include <esp_mac.h>
+#include <lwip/sockets.h>
+#include <cerrno>
 
+#include "ambient.h"
+#include "bounded_http.h"
 #include "http_line.h"
 #include "json_out.h"
 #include "x4_secrets.h"
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <memory>
+#include <new>
 
 namespace ui = freeink::ui;
 
@@ -47,8 +42,6 @@ extern "C" __attribute__((used)) const char kBoardTag[] = "CROSSPOINT-BOARD-V1:x
 
 namespace {
 
-constexpr uint32_t kPowerHoldMs = 1500;
-constexpr uint32_t kIdleOffMs = 120000;
 
 EInkDisplay display(BoardConfig::DEFAULT_DEVICE.display.sclk, BoardConfig::DEFAULT_DEVICE.display.mosi,
                     BoardConfig::DEFAULT_DEVICE.display.cs, BoardConfig::DEFAULT_DEVICE.display.dc,
@@ -58,26 +51,25 @@ ui::DisplayTarget* g_target = nullptr;  // native landscape, no rotation
 
 char g_panel[48] = "?";
 char g_wake[24] = "?";
-char g_lastButton[48] = "press any button";
-uint32_t g_fullMs = 0, g_lastMs = 0;
-const char* g_lastMode = "-";
-uint32_t g_lastInput = 0;
-int g_redraws = 0;
-
 Preferences g_prefs;
 uint32_t g_boot = 0;
 uint32_t g_seq = 0;
 char g_etag[80] = "";
 char g_card[64] = "";
 uint32_t g_nextPollS = 1800;
-uint32_t g_sessionUntil = 0;
+x4ambient::Session g_session;
+x4ambient::Panel g_panelState;
+uint32_t g_lastPoll = 0;
+constexpr uint32_t kSessionPollMs = 5000;
+std::atomic<uint32_t> g_activity{0};
+std::atomic<bool> g_buttonsDown{false};
+std::atomic<bool> g_manualOff{false};
+struct ButtonEvent { uint8_t button; x4ambient::Press press; };
+QueueHandle_t g_events = nullptr;
 bool g_wifi = false;
 bool g_sd = false;
-bool g_pendingConfirm = false;
-constexpr uint32_t kLongPressMs = 700;
-constexpr uint32_t kHttpReadTimeoutMs = 8000;
-constexpr int32_t kHttpConnectTimeoutMs = 5000;
-uint32_t g_sessionMs = 0;
+constexpr uint32_t kHttpTransactionMs = 3000;
+constexpr int32_t kHttpConnectTimeoutMs = 800;
 constexpr size_t kPbmHeaderBytes = 11;  // P4\n800 480\n
 constexpr char kButtonNames[][8] = {"back", "confirm", "left", "right", "up", "down", "power"};
 
@@ -86,14 +78,77 @@ void text(int16_t x, int16_t y, int16_t w, const char* s, bool bold, ui::TextAli
 using x4http::copyTrimmed;
 using x4http::headerValue;
 
-bool readHttpLine(WiFiClient& client, char* line, size_t cap) {
-  const size_t n = client.readBytesUntil('\n', reinterpret_cast<uint8_t*>(line), cap - 1);
-  if (n == 0) return false;
-  line[n] = '\0';
+void inputConsumer(void*) {
+  x4ambient::Confirm confirm;
+  x4ambient::Power power;
+  for (;;) {
+    const uint32_t now = millis();
+    uint8_t button;
+    while (input.popPress(button)) {
+      g_activity.store(now);
+      if (button == InputManager::BTN_CONFIRM) confirm.press(now);
+      else if (button <= InputManager::BTN_DOWN) {
+        const ButtonEvent ev{button, x4ambient::Press::Short};
+        if (xQueueSend(g_events, &ev, 0) != pdTRUE) Serial.println("[x4] input queue full");
+      }
+    }
+    const auto press = confirm.sample(now, input.isPressed(InputManager::BTN_CONFIRM));
+    if (press != x4ambient::Press::None) {
+      g_activity.store(now);
+      const ButtonEvent ev{InputManager::BTN_CONFIRM, press};
+      if (xQueueSend(g_events, &ev, 0) != pdTRUE) Serial.println("[x4] input queue full");
+    }
+    if (power.sample(now, input.isPowerButtonPressed())) g_manualOff.store(true);
+    bool held = false;
+    for (uint8_t b = 0; b <= InputManager::BTN_POWER; ++b) held |= input.isPressed(b);
+    g_buttonsDown.store(held);
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+uint32_t httpClock(uint32_t start) {
+  return g_manualOff.load() ? start + kHttpTransactionMs : millis();
+}
+
+bool connectGateway(WiFiClient& client, uint32_t start) {
+  IPAddress address;
+  // The configured LAN gateway must be a literal IP: DNS has no bounded timeout.
+  if (!address.fromString(X4_GATEWAY_HOST)) return false;
+  const uint32_t elapsed = uint32_t(httpClock(start) - start);
+  if (elapsed >= kHttpTransactionMs) return false;
+  const int32_t remaining = static_cast<int32_t>(kHttpTransactionMs - elapsed);
+  const int32_t timeout = remaining < kHttpConnectTimeoutMs ? remaining : kHttpConnectTimeoutMs;
+  if (!client.connect(address, X4_GATEWAY_PORT, timeout)) return false;
+  return uint32_t(httpClock(start) - start) < kHttpTransactionMs;
+}
+
+struct HttpWriter {
+  int fd;
+  int writeSome(const uint8_t* data, size_t length) {
+    // Arduino NetworkClient::write retries internally; bypass it entirely.
+    const int count = ::send(fd, data, length, MSG_DONTWAIT);
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    return count;
+  }
+};
+
+bool writeRequest(WiFiClient& client, const char* data, size_t length, uint32_t start) {
+  HttpWriter writer{client.fd()};
+  return x4http::writeExact(writer, reinterpret_cast<const uint8_t*>(data), length, start, kHttpTransactionMs,
+                           [start] { return httpClock(start); }, [] { delay(1); });
+}
+
+bool readHttpLine(WiFiClient& client, char* line, size_t cap, uint32_t start) {
+  if (!x4http::readLine(client, line, cap, start, kHttpTransactionMs,
+                        [start] { return httpClock(start); }, [] { delay(1); })) return false;
   copyTrimmed(line, cap, line);
   return true;
 }
 
+bool readExact(WiFiClient& client, uint8_t* out, size_t n, uint32_t start) {
+  return x4http::readExact(client, out, n, start, kHttpTransactionMs,
+                          [start] { return httpClock(start); }, [] { delay(1); });
+}
 
 void drawDeviceStatus() {
   if (!g_target) return;
@@ -109,7 +164,8 @@ void drawDeviceStatus() {
 // it wasn't) with a fast partial refresh, so the person holding the X4 can see
 // the press landed without waiting for the gateway to change the card.
 void showReceipt(const char* button, const char* result) {
-  if (!g_target) return;
+  if (!g_target || !g_panelState.conditional()) return;
+  // Never redraw an unknown stale panel using a fresh/empty RAM framebuffer.
   // Stay inside x4d's reserved white corner (x 640..800, y 0..28).
   g_target->fill(ui::Rect{640, 0, 160, 30}, ui::Paint::solid(ui::Color::White));
   char line[40];
@@ -225,8 +281,8 @@ bool connectWifi() {
     Serial.println("[x4] no readable saved Wi-Fi credential; trying Arduino NVS");
     WiFi.begin();
   }
-  const uint32_t deadline = millis() + 12000;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) delay(100);
+  const uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && uint32_t(millis() - start) < 12000 && !g_manualOff.load()) delay(50);
   g_wifi = WiFi.status() == WL_CONNECTED;
   Serial.printf("[x4] wifi %s%s\n", g_wifi ? "connected " : "failed ",
                 g_wifi ? WiFi.localIP().toString().c_str() : "");
@@ -235,21 +291,32 @@ bool connectWifi() {
 
 bool fetchFrame(const char* wake) {
   if (!g_wifi) return false;
+  const uint32_t readStart = millis();
+  char conditional[112] = "";
+  if (g_panelState.conditional() && g_etag[0]) {
+    const int n = snprintf(conditional, sizeof conditional, "If-None-Match: %s\r\n", g_etag);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof conditional) return false;
+  }
+  char request[768];
+  const int length = snprintf(request, sizeof request,
+                "GET /x4/v1/frame HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
+                "X-Wake: %s\r\nX-Battery: %u\r\nX-Rssi: %d\r\nX-Fw: %s\r\n"
+                "%sConnection: close\r\n\r\n",
+                X4_GATEWAY_HOST, X4_DEVICE_TOKEN, wake,
+                BatteryMonitor().readStatus().percentage, WiFi.RSSI(), ALICENET_FW_VERSION, conditional);
+  if (length < 0 || static_cast<size_t>(length) >= sizeof request) return false;
   WiFiClient client;
-  client.setTimeout(kHttpReadTimeoutMs);  // Stream timeout is in MILLISECONDS
-  if (!client.connect(X4_GATEWAY_HOST, X4_GATEWAY_PORT, kHttpConnectTimeoutMs)) {
+  if (!connectGateway(client, readStart)) {
     Serial.println("[x4] gateway connect failed");
+    client.stop();
     return false;
   }
-  client.printf("GET /x4/v1/frame HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
-                "X-Wake: %s\r\nX-Battery: %u\r\nX-Rssi: %d\r\nX-Fw: %s\r\n",
-                X4_GATEWAY_HOST, X4_DEVICE_TOKEN, wake,
-                BatteryMonitor().readStatus().percentage, WiFi.RSSI(), ALICENET_FW_VERSION);
-  if (g_etag[0]) client.printf("If-None-Match: %s\r\n", g_etag);
-  client.print("Connection: close\r\n\r\n");
-
+  if (!writeRequest(client, request, static_cast<size_t>(length), readStart)) {
+    client.stop();
+    return false;
+  }
   char line[192];
-  if (!readHttpLine(client, line, sizeof line)) {
+  if (!readHttpLine(client, line, sizeof line, readStart)) {
     client.stop();
     return false;
   }
@@ -262,63 +329,60 @@ bool fetchFrame(const char* wake) {
   size_t contentLength = 0;
   char newEtag[80] = "";
   char newCard[64] = "";
-  char actions[128] = "";
   uint32_t session = 0;
   uint32_t nextPoll = g_nextPollS;
-  while (readHttpLine(client, line, sizeof line) && line[0]) {
+  bool headersComplete = false;
+  while (readHttpLine(client, line, sizeof line, readStart)) {
+    if (!line[0]) { headersComplete = true; break; }
     char value[128];
     if (headerValue(line, "Content-Length", value, sizeof value)) contentLength = strtoul(value, nullptr, 10);
     else if (headerValue(line, "ETag", value, sizeof value)) copyTrimmed(newEtag, sizeof newEtag, value);
     else if (headerValue(line, "X-Card", value, sizeof value)) copyTrimmed(newCard, sizeof newCard, value);
-    else if (headerValue(line, "X-Card-Actions", value, sizeof value)) copyTrimmed(actions, sizeof actions, value);
     else if (headerValue(line, "X-Session", value, sizeof value)) session = strtoul(value, nullptr, 10);
     else if (headerValue(line, "X-Next-Poll", value, sizeof value)) nextPoll = strtoul(value, nullptr, 10);
   }
-  g_nextPollS = constrain(nextPoll, 300UL, 21600UL);
-  if (status == 304) {
-    if (newCard[0]) copyTrimmed(g_card, sizeof g_card, newCard);
-    g_sessionMs = session * 1000UL;
-    g_sessionUntil = session ? millis() + g_sessionMs : 0;
-  }
+  if (!headersComplete) { client.stop(); return false; }
   if (status == 304 || status == 204) {
-    Serial.printf("[x4] frame %d, keeping %s\n", status, g_card[0] ? g_card : "current screen");
+    // 304 only authenticates a framebuffer fetched in this wake, not whatever
+    // an earlier firmware/CrossInk left on the physical panel.
+    if (status == 304 && !g_panelState.conditional()) { client.stop(); return false; }
+    g_nextPollS = constrain(nextPoll, 300UL, 21600UL);
+    g_session.configure(millis(), session);
+    Serial.printf("[x4] frame %d: cached panel retained (not refreshed)\n", status);
     client.stop();
     return true;
   }
-  if (status != 200 || contentLength < kPbmHeaderBytes + display.getBufferSize()) {
+  if (status != 200 || contentLength != kPbmHeaderBytes + display.getBufferSize()) {
     Serial.printf("[x4] frame rejected: HTTP %d, %u bytes\n", status, static_cast<unsigned>(contentLength));
     client.stop();
     return false;
   }
   uint8_t pbmHeader[kPbmHeaderBytes];
-  if (client.readBytes(pbmHeader, sizeof pbmHeader) != sizeof pbmHeader ||
+  if (!readExact(client, pbmHeader, sizeof pbmHeader, readStart) ||
       memcmp(pbmHeader, "P4\n800 480\n", kPbmHeaderBytes) != 0) {
     Serial.println("[x4] bad PBM header");
     client.stop();
     return false;
   }
-  uint8_t* frame = display.getFrameBuffer();
-  size_t remaining = display.getBufferSize();
-  size_t offset = 0;
-  while (remaining) {
-    const size_t want = remaining > 1024 ? 1024 : remaining;
-    const size_t got = client.readBytes(frame + offset, want);
-    if (got != want) {
-      Serial.println("[x4] short PBM body");
-      client.stop();
-      return false;
-    }
-    for (size_t i = 0; i < got; ++i) frame[offset + i] = static_cast<uint8_t>(~frame[offset + i]);
-    offset += got;
-    remaining -= got;
+  // Stage a complete PBM before changing RAM or panel. A truncated download
+  // must not contaminate the next receipt/partial refresh of the old card.
+  std::unique_ptr<uint8_t[]> frame(new (std::nothrow) uint8_t[display.getBufferSize()]);
+  if (!frame || !readExact(client, frame.get(), display.getBufferSize(), readStart)) {
+    Serial.println("[x4] incomplete PBM or no staging memory; panel retained");
+    client.stop();
+    return false;
   }
-  display.displayBuffer(EInkDisplay::HALF_REFRESH);
+  client.stop();
+  for (size_t i = 0; i < display.getBufferSize(); ++i)
+    display.getFrameBuffer()[i] = static_cast<uint8_t>(~frame[i]);
   drawDeviceStatus();
-  display.displayBuffer(EInkDisplay::FAST_REFRESH);
+  display.displayBuffer(g_panelState.fullRefresh() ? EInkDisplay::FULL_REFRESH : EInkDisplay::HALF_REFRESH);
+  g_panelState.accept();
+  if (!g_prefs.getBool("had-frame", false)) g_prefs.putBool("had-frame", true);
+  g_nextPollS = constrain(nextPoll, 300UL, 21600UL);
   copyTrimmed(g_etag, sizeof g_etag, newEtag);
   copyTrimmed(g_card, sizeof g_card, newCard);
-  g_sessionMs = session * 1000UL;
-  g_sessionUntil = session ? millis() + g_sessionMs : 0;
+  g_session.configure(millis(), session);
   Serial.printf("[x4] card %s etag %s session %lu poll %lu\n", g_card, g_etag,
                 static_cast<unsigned long>(session), static_cast<unsigned long>(g_nextPollS));
   client.stop();
@@ -326,7 +390,10 @@ bool fetchFrame(const char* wake) {
 }
 
 bool postEvent(uint8_t button, const char* press, const char* wake) {
-  if (!g_wifi || button > InputManager::BTN_DOWN) return false;
+  if (!g_wifi || !g_panelState.conditional() || button > InputManager::BTN_DOWN) {
+    Serial.println("[x4] event not sent: no authenticated current-wake card");
+    return false;
+  }
   const uint32_t eventSeq = g_seq + 1;
   char body[512];
   const int length = x4json::eventBody(body, sizeof body, X4_DEVICE_ID, static_cast<unsigned long>(g_boot),
@@ -336,17 +403,30 @@ bool postEvent(uint8_t button, const char* press, const char* wake) {
     showReceipt(kButtonNames[button], "too big");
     return false;
   }
+  const uint32_t readStart = millis();
+  char request[512];
+  const int requestLength = snprintf(request, sizeof request,
+                "POST /x4/v1/events HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
+                "Content-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                X4_GATEWAY_HOST, X4_DEVICE_TOKEN, length);
+  if (requestLength < 0 || static_cast<size_t>(requestLength) >= sizeof request) {
+    showReceipt(kButtonNames[button], "too big");
+    return false;
+  }
   WiFiClient client;
-  client.setTimeout(kHttpReadTimeoutMs);  // Stream timeout is in MILLISECONDS
-  if (!client.connect(X4_GATEWAY_HOST, X4_GATEWAY_PORT, kHttpConnectTimeoutMs)) {
+  if (!connectGateway(client, readStart)) {
+    client.stop();
     showReceipt(kButtonNames[button], "no link");
     return false;
   }
-  client.printf("POST /x4/v1/events HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
-                "Content-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-                X4_GATEWAY_HOST, X4_DEVICE_TOKEN, length, body);
+  if (!writeRequest(client, request, static_cast<size_t>(requestLength), readStart) ||
+      !writeRequest(client, body, static_cast<size_t>(length), readStart)) {
+    client.stop();
+    showReceipt(kButtonNames[button], "not sent");
+    return false;
+  }
   char line[192];
-  const int status = readHttpLine(client, line, sizeof line) ? x4http::statusCode(line) : -1;
+  const int status = readHttpLine(client, line, sizeof line, readStart) ? x4http::statusCode(line) : -1;
   if (status != 200) {
     client.stop();
     char why[16];
@@ -355,25 +435,29 @@ bool postEvent(uint8_t button, const char* press, const char* wake) {
     return false;
   }
   bool frameChanged = false;
-  while (readHttpLine(client, line, sizeof line) && line[0]) {
+  bool headersComplete = false;
+  while (readHttpLine(client, line, sizeof line, readStart)) {
+    if (!line[0]) { headersComplete = true; break; }
     char value[32];
     if (headerValue(line, "X-Frame-Changed", value, sizeof value)) frameChanged = atoi(value) != 0;
   }
+  if (!headersComplete) { client.stop(); return false; }
   g_seq = eventSeq;
   g_prefs.putULong("seq", g_seq);
   client.stop();
   Serial.printf("[x4] event #%lu %s %s\n", static_cast<unsigned long>(g_seq), kButtonNames[button], press);
-  if (frameChanged) fetchFrame("session");
+  if (frameChanged) { fetchFrame("session"); g_lastPoll = millis(); }
   else showReceipt(kButtonNames[button], "sent");
   return true;
 }
 
 const char* wakeName() {
   switch (esp_sleep_get_wakeup_cause()) {
-    case ESP_SLEEP_WAKEUP_GPIO: return "power button";
-    case ESP_SLEEP_WAKEUP_TIMER: return "timer";
-    case ESP_SLEEP_WAKEUP_UNDEFINED: return esp_reset_reason() == ESP_RST_POWERON ? "power-on" : "reset";
-    default: return "other";
+    case ESP_SLEEP_WAKEUP_GPIO:
+    case ESP_SLEEP_WAKEUP_EXT0:
+    case ESP_SLEEP_WAKEUP_EXT1: return x4ambient::wakeName(x4ambient::Wake::Button);
+    case ESP_SLEEP_WAKEUP_TIMER: return x4ambient::wakeName(x4ambient::Wake::Timer);
+    default: return x4ambient::wakeName(x4ambient::Wake::Boot);
   }
 }
 
@@ -384,90 +468,54 @@ void text(int16_t x, int16_t y, int16_t w, const char* s, bool bold = false, ui:
   g_target->text(ui::Rect{x, y, w, 40}, s, st);
 }
 
-void fill(int16_t x, int16_t y, int16_t w, int16_t h) {
-  g_target->fill(ui::Rect{x, y, w, h}, ui::Paint::solid(ui::Color::Black));
-}
-
-void drawStatus() {
+void drawSplash() {
   display.clearScreen(0xFF);
-  char line[96];
-
-  // Orientation marker: a solid up-arrow + "TOP" at native (0..800, y=0) edge.
-  for (int16_t i = 0; i < 24; ++i) fill(static_cast<int16_t>(400 - i), static_cast<int16_t>(4 + i), static_cast<int16_t>(2 * i + 1), 1);
-  fill(392, 28, 17, 30);
-  text(420, 14, 120, "TOP", true);
-
-  // Device-owned status corner (top-right), same box x4d keeps white.
-  const BatteryMonitor battery;
-  const BatteryMonitor::Status st = battery.readStatus();
-  snprintf(line, sizeof line, "%u%%  %.2fV", st.percentage, st.millivolts / 1000.0);
-  text(640, 2, 156, line, false, ui::TextAlign::Right);
-
-  text(24, 70, 752, "alicenet-x4  hello", true);
-  fill(24, 112, 752, 3);
-
-  const esp_partition_t* running = esp_ota_get_running_partition();
-  snprintf(line, sizeof line, "firmware %s  in %s", ALICENET_FW_VERSION, running ? running->label : "?");
-  text(24, 130, 752, line);
-  snprintf(line, sizeof line, "panel: %s", g_panel);
-  text(24, 170, 752, line);
-  snprintf(line, sizeof line, "woke by: %s", g_wake);
-  text(24, 210, 752, line);
-  snprintf(line, sizeof line, "refresh: full %lu ms, last %s %lu ms (#%d)", static_cast<unsigned long>(g_fullMs),
-           g_lastMode, static_cast<unsigned long>(g_lastMs), g_redraws);
-  text(24, 250, 752, line);
-  snprintf(line, sizeof line, "button: %s", g_lastButton);
-  text(24, 290, 752, line, true);
-
-  fill(24, 400, 752, 2);
-  text(24, 410, 752, "Back+Up at wake: CrossInk     Hold Power: off     idle 2 min: off");
-  text(24, 446, 752, "Is the arrow pointing to the top of the screen as you hold it?");
+  text(24, 130, 752, "alicenet-x4", true);
+  text(24, 180, 752, "Connecting for the first card...");
+  text(24, 230, 752, "No successful frame yet. Gateway/Wi-Fi may be unavailable.");
+  text(24, 400, 752, "Back+Up at wake: CrossInk. Hold Power: off.");
+  display.displayBuffer(EInkDisplay::FULL_REFRESH);
 }
 
-void refresh(EInkDisplay::RefreshMode mode, const char* name) {
-  const uint32_t t0 = millis();
-  display.displayBuffer(mode);
-  g_lastMs = millis() - t0;
-  g_lastMode = name;
-  if (mode == EInkDisplay::FULL_REFRESH && g_fullMs == 0) g_fullMs = g_lastMs;
-  Serial.printf("[hello] refresh %s %lu ms\n", name, static_cast<unsigned long>(g_lastMs));
-}
-
-// Power off, exactly like CrossInk's ESP32-C3 sleep path (HalPowerManager.cpp):
-// on battery, dropping the GPIO13 latch cuts power; on USB the chip deep-sleeps
-// and the power button wakes it.
-[[noreturn]] void powerOff(const char* why) {
-  Serial.printf("[x4] power off: %s\n", why);
-  display.clearScreen(0xFF);
-  text(24, 180, 752, "alicenet-x4 is off", true, ui::TextAlign::Center);
-  text(24, 230, 752, why, false, ui::TextAlign::Center);
-  text(24, 280, 752, "Hold Power to wake.  Back+Up while waking: CrossInk", false, ui::TextAlign::Center);
-  display.displayBuffer(EInkDisplay::HALF_REFRESH);
-  display.deepSleep();
-  WiFi.disconnect(true, false);
+[[noreturn]] void enterSleep(bool manual, const char* why) {
+  const auto policy = x4ambient::sleepPolicy(manual);
+  Serial.printf("[x4] %s: %s\n", manual ? "manual off" : "ambient sleep (panel may be stale)", why);
+  if (policy.redraw) {
+    display.clearScreen(0xFF);
+    text(24, 180, 752, "alicenet-x4 is off", true, ui::TextAlign::Center);
+    text(24, 280, 752, "Hold Power to wake. Back+Up while waking: CrossInk", false, ui::TextAlign::Center);
+    display.displayBuffer(EInkDisplay::HALF_REFRESH);
+  }
+  display.deepSleep(); // controller sleep only; no framebuffer refresh
+  WiFi.disconnect(true, false); // wifiOff=true, eraseAP=false
   WiFi.mode(WIFI_OFF);
   Serial.flush();
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(g_nextPollS) * 1000000ULL);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  if (policy.timer) esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(g_nextPollS) * 1000000ULL);
+  // SDK holdRailOff pattern, but ambient holds the X4 GPIO13 supply latch HIGH.
+  // BoardConfig::holdPowerRails() releases this pad hold first on every wake.
   for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
     if (pin < 0 || BoardConfig::latchConflictsWithBus(pin)) continue;
     const auto latch = static_cast<gpio_num_t>(pin);
+    gpio_hold_dis(latch);
     gpio_set_direction(latch, GPIO_MODE_OUTPUT);
-    gpio_set_level(latch, 0);
+    gpio_set_level(latch, policy.latchHigh ? HIGH : LOW);
     gpio_hold_en(latch);
   }
   freeink::PowerManager::powerDownRailsForSleep();
   freeink::PowerManager::waitForPowerButtonRelease();
-  esp_sleep_config_gpio_isolate();
   freeink::PowerManager::armPowerButtonWakeup();
-  gpio_deep_sleep_hold_en();
-  esp_deep_sleep_start();
-  esp_restart();  // unreachable unless sleep entry was rejected
+  freeink::PowerManager::deepSleep(); // SDK isolate/hold-enable + abort recovery
 }
+
+[[noreturn]] void ambientSleep(const char* why) { enterSleep(false, why); }
+[[noreturn]] void powerOff(const char* why) { enterSleep(true, why); }
 
 }  // namespace
 
 void setup() {
   BoardConfig::holdPowerRails();
+  gpio_deep_sleep_hold_dis(); // clear global deep-sleep hold after asserting supply
   Serial.begin(115200);
   delay(50);
   freeink::recovery::checkBootCombo();  // Back+Up held -> ota_0 (CrossInk); otherwise no-op
@@ -485,8 +533,8 @@ void setup() {
   g_prefs.begin("alicenet", false);
   g_boot = g_prefs.getULong("boot", 0) + 1;
   g_seq = g_prefs.getULong("seq", 0);
-  // No persisted ETag: every wake redraws the status screen, so the panel no
-  // longer shows the old card and a 304 would leave the device with nothing.
+  // No retained framebuffer across deep sleep. Fetch unconditionally each wake;
+  // never claim a persisted ETag proves the physical panel is the current card.
   g_etag[0] = '\0';
   g_prefs.putULong("boot", g_boot);
 
@@ -500,40 +548,38 @@ void setup() {
   delay(50);
   input.begin();
   input.beginAsync();
+  g_events = xQueueCreate(32, sizeof(ButtonEvent));
+  g_activity.store(millis());
+  if (!g_events || xTaskCreate(inputConsumer, "x4_input", 3072, nullptr, 1, nullptr) != pdPASS)
+    ambientSleep("input consumer unavailable");
 
   g_target = new ui::DisplayTarget(display.getFrameBuffer(), display.getDisplayWidth(), display.getDisplayHeight(),
                                    display.getDisplayWidthBytes(), ui::Orientation::LandscapeCounterClockwise);
-  drawStatus();
-  refresh(EInkDisplay::FULL_REFRESH, "FULL");
-  drawStatus();  // show the measured FULL time while Wi-Fi joins
-  refresh(EInkDisplay::FAST_REFRESH, "FAST");
-
-  freeink::PowerManager::waitForPowerButtonRelease();
-  g_lastInput = millis();
+  if (g_panelState.splash(g_prefs.getBool("had-frame", false))) drawSplash();
+  else Serial.println("[x4] retaining unknown/stale physical panel until a complete frame arrives");
   if (connectWifi()) {
-    if (!fetchFrame(g_wake)) powerOff("gateway fetch failed");
-    if (!g_sessionUntil) powerOff("frame shown");
-  } else {
-    powerOff("wifi unavailable");
-  }
+    if (!fetchFrame(g_wake)) Serial.println("[x4] initial fetch failed; leaving cached panel untouched");
+  } else Serial.println("[x4] wifi unavailable; leaving cached panel untouched");
+  g_lastPoll = millis();
+  // loop drains inputs received during Wi-Fi/fetch before considering sleep.
 }
 
 void loop() {
-  static bool armed = false;
-  if (!input.isPowerButtonPressed()) armed = true;
-  if (armed && input.isPowerButtonPressed() && input.getPowerButtonHeldTime() >= kPowerHoldMs) powerOff("power held");
-  if (g_sessionUntil && millis() >= g_sessionUntil) powerOff("session complete");
-  if (millis() - g_lastInput > kIdleOffMs) powerOff("idle for 2 minutes");
-
-  uint8_t b;
-  while (input.popPress(b)) {
-    if (b == InputManager::BTN_POWER) continue;
-    g_lastInput = millis();
-    // First-slice rule: emit a short press on the edge immediately. This keeps
-    // the event path reliable even if the device is about to leave its session;
-    // long-confirm classification will move to an explicit release event later.
-    postEvent(b, "short", "button");
-    if (g_sessionUntil) g_sessionUntil = millis() + g_sessionMs;
+  if (g_manualOff.load()) powerOff("power held");
+  g_session.activity(g_activity.load());
+  ButtonEvent ev;
+  // One event per loop avoids starving expiry/polling on a busy queue.
+  if (xQueueReceive(g_events, &ev, 0) == pdTRUE) {
+    postEvent(ev.button, ev.press == x4ambient::Press::Long ? "long" : "short", "button");
+    // Use input-consumer time, not request/refresh completion, for a full session.
+    g_session.activity(g_activity.load());
+  }
+  if (g_manualOff.load()) powerOff("power held");
+  if (g_session.expired(millis()) && !g_buttonsDown.load() && uxQueueMessagesWaiting(g_events) == 0)
+    ambientSleep("session complete or offline");
+  if (g_wifi && uint32_t(millis() - g_lastPoll) >= kSessionPollMs) {
+    fetchFrame("session"); // ordinary conditional GET, never a blocking long-poll
+    g_lastPoll = millis();
   }
   delay(10);
 }
