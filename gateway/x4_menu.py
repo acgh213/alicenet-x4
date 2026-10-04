@@ -22,8 +22,7 @@ BLURBS = {"home": "Clock, weather, agenda", "work": "PRs, issues, CI",
           "agents": "Decisions and agent reports", "house": "Home Assistant",
           "life": "Routines and reminders", "reports": "Everything to read",
           "inbox": "Approved message threads", "status": "Device and sources"}
-PLANNED = {"work": "Read-only pull requests, review requests, issues and CI state.",
-           "life": "Consented routines, reminders and transitions. Rest stays a valid plan.",
+PLANNED = {"life": "Consented routines, reminders and transitions. Rest stays a valid plan.",
            "inbox": "Approved Telegram threads only, read-only. Replies need a stronger confirmation."}
 ROWS = 6          # list rows per screen
 BODY = (24, 128, 776, 404)
@@ -116,8 +115,9 @@ def paginate(record, width=BODY[2] - BODY[0], height=BODY[3] - BODY[1]):
 
 
 class Menu:
-    def __init__(self, glance, records):
+    def __init__(self, glance, records, work=None):
         self.glance, self.records, self.store = glance, records, glance.store
+        self.work = work
         with self.store.lock, self.store._db() as db:
             db.execute(SCHEMA)
 
@@ -126,7 +126,8 @@ class Menu:
         with self.store._db() as db:
             row = db.execute("SELECT body FROM menu_state WHERE device=?", (device,)).fetchone()
         base = {"view": "glance", "selected": "home", "agent": None, "record": None, "revision": None,
-                "page": 0, "pages": 1, "cursor": 0, "choice": None, "notice": None}
+                "page": 0, "pages": 1, "cursor": 0, "choice": None, "notice": None,
+                "work_id": None, "work_revision": None}
         return dict(base, **json.loads(row["body"])) if row else base
 
     def _save(self, device, state):
@@ -145,11 +146,15 @@ class Menu:
 
     # ---- frames -------------------------------------------------------------------------
     def frame(self, device, now, tz, session_s):
-        state = self._settle(device, self.state(device), now)
+        state = self.state(device)
+        # One Work observation covers settling and rendering: a timer collector
+        # can atomically replace the source file while a frame is being drawn.
+        work_snapshot = self._work() if state["view"] in ("work", "work_detail") else None
+        state = self._settle(device, state, now, work_snapshot)
         if state["view"] == "glance":
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
         from x4_render import etag, to_pbm
-        image, card, extra = self._render(device, state, now, tz)
+        image, card, extra = self._render(device, state, now, tz, work_snapshot)
         pbm = to_pbm(image)
         tag = '"' + etag(pbm) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
@@ -169,8 +174,19 @@ class Menu:
         house = self._house()
         return house.get("rooms", []) if house and house.get("available") else []
 
-    def _settle(self, device, state, now):
+    def _settle(self, device, state, now, work_snapshot=None):
         """A record or room that vanished drops Cassie back to its list, not an error."""
+        if state["view"] == "work_detail":
+            from x4_work_view import work_items, revision
+            item = next((i for i in work_items(work_snapshot) if i["id"] == state["work_id"]), None)
+            if item is None:
+                state = dict(state, view="work", work_id=None, cursor=0, page=0,
+                             notice="That item changed; refresh the list.")
+                self._save(device, state)
+            elif revision(item) != state["work_revision"]:
+                state = dict(state, work_revision=revision(item), page=0,
+                             notice="This item changed. Showing current details.")
+                self._save(device, state)
         if state["view"] == "room" and state.get("room") not in [r["name"] for r in self._rooms()]:
             state = dict(state, view="house", room=None, cursor=0)
             self._save(device, state)
@@ -228,7 +244,7 @@ class Menu:
             if target == "home":
                 self.go_home(device)
                 return dict(result, moved=True)
-            state.update(view=target if target in ("agents", "reports", "status", "house") else "soon." + target,
+            state.update(view=target if target in ("agents", "reports", "status", "house", "work") else "soon." + target,
                          cursor=0, agent=None, record=None)
         else:
             return result
@@ -384,6 +400,48 @@ class Menu:
             return dict(result, moved=True)
         return result
 
+    def _work(self):
+        return self.work.snapshot() if self.work is not None else None
+
+    def _on_work(self, device, state, button, press, shown, now, result):
+        from x4_work_view import work_items, revision
+        items = work_items(self._work())
+        if button == "confirm" and press == "long":
+            return dict(result, refresh=True, refresh_target="work")
+        if button in ("up", "down") and items:
+            state["cursor"] = self._move(state, button, len(items))
+        elif button == "back":
+            self._list_back(device, state)
+            return dict(result, moved=True)
+        elif button == "confirm" and press == "short" and shown and shown.get("view") == "work":
+            item = next((i for i in items if i["id"] == shown.get("work_id")), None)
+            if item is None:
+                state["notice"] = "That item changed; refresh the list."
+            else:
+                state.update(view="work_detail", work_id=item["id"], work_revision=revision(item), page=0)
+                if revision(item) != shown.get("work_revision"):
+                    state["notice"] = "This item changed. Showing current details."
+        else:
+            return result
+        self._save(device, state)
+        return dict(result, moved=True)
+
+    def _on_work_detail(self, device, state, button, press, shown, now, result):
+        from x4_work_view import work_items, detail_pages
+        snapshot = self._work()
+        item = next((i for i in work_items(snapshot) if i["id"] == state["work_id"]), None)
+        if button == "confirm" and press == "long":
+            return dict(result, refresh=True, refresh_target="work")
+        if button == "back" or item is None:
+            state.update(view="work", work_id=None, page=0)
+        elif button in ("up", "down"):
+            pages = detail_pages(item, snapshot)
+            state["page"] = max(0, min(len(pages) - 1, state["page"] + (1 if button == "down" else -1)))
+        else:
+            return result
+        self._save(device, state)
+        return dict(result, moved=True)
+
     def __getattr__(self, name):
         if name.startswith("_on_soon."):
             return self._on_status
@@ -419,7 +477,7 @@ class Menu:
         if len(rows) > ROWS:
             _text(image, f"{start + 1}–{min(start + ROWS, len(rows))} of {len(rows)}", (600, 396, 776, 414), 13)
 
-    def _render(self, device, state, now, tz):
+    def _render(self, device, state, now, tz, work_snapshot=None):
         view = state["view"]
         if view == "menu":
             image = self._canvas("Destinations", "Alicenet · X4", tz, now)
@@ -474,6 +532,9 @@ class Menu:
             return image, view if view == "reports" else f"agent.{state['agent']}"[:48], extra
         if view in ("record", "choice"):
             return self._render_record(state, now, tz)
+        if view in ("work", "work_detail"):
+            from x4_work_view import render_work
+            return render_work(state, work_snapshot, now, tz, self)
         if view == "status":
             return self._render_status(device, state, now, tz), "status", {}
         if view in ("house", "room"):

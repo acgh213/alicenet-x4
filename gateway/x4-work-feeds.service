@@ -1,0 +1,8 @@
+# Inactive example: review paths before installing as a systemd user unit.
+[Unit]
+Description=Collect public read-only X4 Work PR and build information
+[Service]
+Type=oneshot
+WorkingDirectory=/home/cassie/projects/alicenet-x4/gateway
+ExecStart=/usr/bin/env -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 /home/cassie/projects/alicenet-x4/gateway/x4_work.py --config /home/cassie/.config/x4d/work.json --output /home/cassie/.local/state/x4d/work.json
+TimeoutStartSec=20

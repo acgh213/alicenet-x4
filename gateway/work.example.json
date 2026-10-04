@@ -1,0 +1,5 @@
+{
+  "repository": "acgh213/alicenet-x4",
+  "interval_s": 600,
+  "stale_after_s": 1800
+}

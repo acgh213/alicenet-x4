@@ -29,7 +29,7 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
   recorded and the screen says so.
 - On a report, Confirm marks that revision read.
 - Long Confirm on any record asks Muse for fuller context. It never approves anything.
-- Work, Life and Inbox say "Not connected yet" until their adapters exist.
+- Life and Inbox say "Not connected yet" until their adapters exist.
 - An unattended timer/boot wake returns the menu to the dashboard.
 
 House (read-only):
@@ -172,6 +172,61 @@ status corner, long titles, privacy exclusions, stale/unavailable/empty states,
 weather zeros, sampling honesty and pagination. HTTP tests exercise built-in
 page precedence, navigation dedupe, authentication and Muse/local action separation.
 Host tests are not physical panel or sleep-current measurements.
+
+## Work: public PR and build browsing
+
+Work is a read-only GitHub surface for the explicitly approved public repository
+`acgh213/alicenet-x4`. It shows open PRs and the latest GitHub Actions run on the
+observed default branch. A successful build for an older head is labelled
+`older head`; it never implies that newer code passed. PRs show draft/ready
+state, not merge readiness or per-PR CI.
+
+Up/Down chooses a build or PR; Confirm opens details, with Up/Down pagination.
+Back returns to Work and then Destinations. Hold Confirm refreshes Work only.
+Confirm binds to the identity shown on the device's frame, so reordered or
+removed PRs cannot open a different item. Changed details have a notice.
+An unattended timer wake still returns to the ambient dashboard.
+
+PR and build collection ages are displayed separately. Empty successful reads,
+absent builds, unavailable reads, retained failed-refresh data and data older
+than thirty minutes are distinct. A full capped PR page says
+`Showing first 100 PRs`; this is not a claim to have fetched every open PR.
+PR update/build timestamps are separate from collection age.
+
+The collector makes unauthenticated GET requests to the fixed GitHub API origin
+only. No bodies/comments/logs/artifacts, credentials, repository mutations or
+firmware changes are involved. Rate limits and network failures keep prior
+valid data marked old; repository/config or default-branch changes invalidate
+inapplicable cache.
+
+Host handoff (examples only; this PR installs or activates nothing):
+
+- `work.example.json` documents the explicit public-repository allowlist.
+  Proposed config path: `~/.config/x4d/work.json`.
+- `x4_work.py --config CONFIG --output SNAPSHOT` writes a separate atomic source
+  snapshot, proposed at `~/.local/state/x4d/work.json`. Exit 1 can still mean a
+  failure-marked snapshot was written; error response bodies are never logged.
+  A shared per-output file lock serializes timer/manual collector processes;
+  a busy collector exits 1 without changing the snapshot.
+- Optional gateway keys `work_config`, `work_snapshot` and
+  `work_refresh_cmd` select this source. The refresh command is an argv array,
+  for example `["/usr/bin/python3", "/home/cassie/projects/alicenet-x4/gateway/x4_work.py"]`
+  with explicit `--config`/`--output` arguments when using different paths.
+  Existing HA refresh configuration remains independent.
+- `x4-work-feeds.service` and `x4-work-feeds.timer` are inactive user-unit
+  examples for ten-minute collection. Review paths and obtain deployment
+  authorization before using them.
+
+Without valid source configuration, Work says it is not set up. With configuration
+but no valid snapshot, it says unavailable. Removing the allowlist hides cached
+data immediately. A successful refresh updates the gateway; device display
+still occurs on its next pull. Public unauthenticated API rate limits can prevent
+fresh collection without implying that the repository is empty.
+
+Work tests use synthetic GitHub responses, real local HTTP device requests and
+offline subprocess refresh fixtures. Existing Python 3.11/Pillow gateway checks
+cover the source and rendered/navigation contract. No live host, hardware or
+device activation is needed to run them.
 
 Firmware build/install instructions and pending battery sleep gates:
 [`../firmware/README.md`](../firmware/README.md). Preserve CrossInk in ota_0;

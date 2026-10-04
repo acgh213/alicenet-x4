@@ -1,0 +1,10 @@
+# Inactive example; this feature PR does not activate host collection.
+[Unit]
+Description=Keep the X4 public Work snapshot current
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=10min
+Persistent=true
+Unit=x4-work-feeds.service
+[Install]
+WantedBy=timers.target
