@@ -134,7 +134,9 @@ class Menu(HouseViews):
 
     def _save(self, device, state):
         with self.store.lock, self.store._db() as db:
-            db.execute("INSERT INTO menu_state VALUES (?,?) ON CONFLICT(device) DO UPDATE SET body=excluded.body",
+            db.execute("INSERT INTO menu_state VALUES (?,json_set(?, '$._navigation_revision', 1)) "
+                       "ON CONFLICT(device) DO UPDATE SET body=json_set(excluded.body, "
+                       "'$._navigation_revision', COALESCE(json_extract(menu_state.body, '$._navigation_revision'), 0)+1)",
                        (device, json.dumps(state)))
 
     def wake(self, device, wake):

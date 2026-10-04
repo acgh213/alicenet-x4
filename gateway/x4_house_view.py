@@ -35,12 +35,30 @@ class HouseViews:
                     or fingerprint(current) != fingerprint(displayed)):
                 state['notice'] = 'Review current state; no action prepared.'
             else:
+                import json
+                revision = state.get('_navigation_revision', 0)
+                action = None
                 try:
                     action = self.house_controls.preview(device, state['room'],
                                                          dict(displayed, ha_source_key=shown.get('house_source_key')), now)
                     state.update(view='house_preview', house_action=action)
                 except ValueError:
                     state['notice'] = 'Controls unavailable or policy changed. No action.'
+                # The helper can take seconds. Install its result only if no
+                # navigation occurred, including leaving and returning to this room.
+                state['_navigation_revision'] = revision + 1
+                with self.store.lock, self.store._db() as db:
+                    installed = db.execute(
+                        "UPDATE menu_state SET body=? WHERE device=? "
+                        "AND json_extract(body, '$.view')='room' "
+                        "AND COALESCE(json_extract(body, '$._navigation_revision'), 0)=?",
+                        (json.dumps(state), device, revision)).rowcount
+                if not installed and action:
+                    try:
+                        self.house_controls.cancel(device, action['id'], now)
+                    except ValueError:
+                        pass  # obsolete frames cannot confirm this discarded action
+                return dict(result, moved=bool(installed))
         else:
             return result
         self._save(device, state)
