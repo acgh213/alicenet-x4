@@ -105,7 +105,7 @@ class Menu(unittest.TestCase):
         self.assertIn("1 unread", text)
 
     def test_unbuilt_destinations_say_so_honestly(self):
-        for name in ("life", "inbox"):  # House and Work have real source views.
+        for name in ("life",):  # House, Work and Inbox have real source views.
             with self.subTest(name=name):
                 self.menu.go_home("x4-01")
                 self.open_destination(name)

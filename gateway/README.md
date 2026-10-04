@@ -29,7 +29,8 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
   recorded and the screen says so.
 - On a report, Confirm marks that revision read.
 - Long Confirm on any record asks Muse for fuller context. It never approves anything.
-- Life and Inbox say "Not connected yet" until their adapters exist.
+- Life says "Not connected yet" until its adapter exists. Inbox has a read-only,
+  explicitly scoped report ingress; see [Inbox consent and API](../docs/inbox.md).
 - An unattended timer/boot wake returns the menu to the dashboard.
 
 House (read-only by default; explicit light controls are opt-in):
