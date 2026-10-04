@@ -42,8 +42,9 @@ Responses:
 - `200 OK`, `Content-Type: image/x-portable-bitmap`: a **P4 PBM, 800×480 exactly**, 48,000-byte
   raster after the header. PBM bit 1 = black; the device inverts into FreeInkDisplay's
   1 = white buffer. Headers:
-  - `ETag: "<sha256 of the PBM, 16 hex>"`: content-addressed, so the staleness marker or a
-    re-render changes it but an identical republish doesn't
+  - `ETag: "<opaque revision, 16 hex>"`: normally content-addressed PBM; House
+    control rooms also bind selected entity, HA source and observation fingerprint.
+    Identical pixels with changed action context must return a new frame, not 304.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
   - `X-Card: weather.today`: the current card id, echoed back with events

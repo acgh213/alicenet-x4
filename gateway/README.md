@@ -32,7 +32,7 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
 - Life and Inbox say "Not connected yet" until their adapters exist.
 - An unattended timer/boot wake returns the menu to the dashboard.
 
-House (read-only):
+House (read-only by default; explicit light controls are opt-in):
 
 - Rooms come from `~/.config/x4d/house.json`, an allowlist with your own room names
   and labels (HA areas are often wrong). See `house.example.json`. Up to 8 rooms of 8
@@ -44,8 +44,49 @@ House (read-only):
   Unavailable, unknown and unreadable entities are shown as such, never as off.
 - Freshness is always on screen: `observed 4 min ago`, `STALE · observed 52 min ago`,
   or `refresh failed · showing 20 min old`. Hold Confirm to refresh now.
-- Confirm on a room page does nothing yet: the first control will be one reversible,
-  allowlisted action with its own confirmation and receipt.
+- With no `house_controls` config, Confirm on a room remains read-only. With the
+  reviewed helper enabled, Up/Down selects a device; short Confirm prepares a preview
+  only for an allowlisted, available, unprotected light in a fresh House snapshot.
+  Other entities (especially `switch.washer`) have no action path or sweep.
+- The preview displays entity, observed state, explicit requested on/off state,
+  Home Assistant source, revision and reversibility. Short Confirm executes only
+  that preview within 120 seconds. Back cancels; hold never executes on a preview.
+  Fresh allowlist/protection, source identity and complete HA light-state fingerprint
+  are checked independently in the helper immediately before sending.
+- Receipts are `Verified` only after a successful service and matching fresh state
+  readback. Changed policy/state or expired previews are rejected. Timeout, crash,
+  lost response or mismatched readback remains `Uncertain`; no blind retry. Reopening
+  the room is not a retry: independently inspect first, then create a new preview.
+  The gateway reconciles a lost response through the exact read-only helper receipt.
+  Both event dedupe and action-id execution claims survive restart; a separate private
+  SQLite journal retains previews, execution claims, receipts and append-only audit.
+
+### House helper boundary (not deployed by this PR)
+
+`house_controls` requires exactly five absolute paths:
+`python` (the existing Hermes interpreter with its HA dependencies), `hermes_root`
+(the installed Hermes source), `hermes_home` (the expressly selected credential profile),
+`policy` (the existing House allowlist), and `journal` (a private, separate SQLite path).
+There is no generic command/service/payload config or agent mutation endpoint.
+
+x4d invokes only the bundled `x4_house_helper.py` with closed JSON on stdin and fixed
+argv, never a shell. The gateway environment is scrubbed; only the helper loads the
+selected profile's HASS credentials and calls the existing Hermes HA integration.
+The helper admits a single `light.*` target and only `turn_on` / `turn_off`, with no
+service data, toggle, area/group sweep or non-light domain. Process-shared flock
+serializes journal operations; a busy helper refuses promptly rather than holding an
+HTTP request past the firmware deadline. Confirm execution runs off the HTTP ACK path.
+The helper stores uncertainty before sending and never
+retries an already claimed action, including when killed during a request.
+
+The source collector must be updated and refreshed before enabling controls: old
+snapshots without opaque HA-origin and state fingerprints cannot prepare actions.
+Helper and collector must resolve to the same HA origin. Keep credential files and
+journals outside the repo; this PR installs nothing and makes no physical changes.
+Remaining acceptance gate: after independent review and separately authorized opt-in,
+use X4 buttons to preview one approved light, Back-cancel and verify unchanged, then
+preview/Confirm once, inspect physical light plus receipt, and separately preview the
+reverse action. Never use the washer for this test.
 
 Device behaviour:
 

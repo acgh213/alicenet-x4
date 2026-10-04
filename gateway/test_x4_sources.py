@@ -139,6 +139,9 @@ class HouseSource(unittest.TestCase):
 
     def test_house_is_collected_through_the_same_ha_client(self):
         s=self.run_collect({'light.lr':{'state':'off'},'climate.t':{'state':'cool'}})
+        from x4_house_actions import fingerprint
+        self.assertEqual(s['house']['source_key'], fingerprint('http://ha.test:8123'))
+        self.assertNotIn('private-token', json.dumps(s))
         self.assertTrue(s['house']['available'])
         self.assertEqual([i['state'] for i in s['house']['rooms'][0]['items']], ['off','cool'])
         self.assertIn('http://ha.test:8123/api/states/light.lr', self.urls)
