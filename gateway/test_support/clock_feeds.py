@@ -24,6 +24,8 @@ def validate_config(config):
     for source in result.get("sources", []):
         source = dict(source)
         source.setdefault("enabled", True)
+        if source.get("calendar") and source["enabled"] and source.get("display_consent") is not True:
+            raise ValueError("calendar display consent is required")
         source.setdefault("fields", ["text", "status", "at"])
         sources.append(source)
     result["sources"] = sources
