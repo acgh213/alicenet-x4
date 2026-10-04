@@ -3,7 +3,10 @@ import copy
 import importlib
 import importlib.util
 import json
+import socket
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -269,9 +272,123 @@ class Collector(unittest.TestCase):
                 with patch.object(self.w, "collect", side_effect=AssertionError("collector must not start")):
                     self.assertEqual(self.w.main(["--config", str(cfg), "--output", str(out)]), 1)
                 self.assertEqual(json.loads(out.read_text()), old)
-            # Releasing the shared lock permits the next collection.
             with self.w.collection_lock(out) as locked:
                 self.assertTrue(locked)
+
+    def test_absolute_deadline_includes_slow_http_headers(self):
+        stop = threading.Event()
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(2)
+        def serve():
+            try:
+                with listener.accept()[0] as connection:
+                    connection.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                    for _ in range(60):
+                        if stop.wait(0.02):
+                            return
+                        connection.sendall(b"x")
+                    connection.sendall(b"\r\nContent-Length: 2\r\n\r\n{}")
+            except OSError:
+                pass
+        worker = threading.Thread(target=serve)
+        worker.start()
+        try:
+            started = time.monotonic()
+            with patch.object(self.w, "API", f"http://127.0.0.1:{listener.getsockname()[1]}"):
+                with self.assertRaises(TimeoutError):
+                    self.w.http_get(f"/repos/{REPO}", started + 0.15)
+            self.assertLess(time.monotonic() - started, 0.35)
+        finally:
+            stop.set()
+            listener.close()
+            worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+
+    def test_head_without_branch_and_malformed_head_are_rejected(self):
+        for head in ({"bad": 1}, HEAD):
+            with self.subTest(head=head):
+                snap = self.collect()
+                snap["repository"].update(default_branch=None, head_sha=head)
+                for section in ("prs", "build"):
+                    snap[section] = {"available": False, "collected_at": None,
+                                     "refresh_failed": True, "error": "unavailable", "data": None}
+                with self.assertRaises(ValueError):
+                    self.w.validate_snapshot(snap, config())
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "Linux collector deadline")
+    def test_absolute_deadline_interrupts_blocked_resolver(self):
+        import signal
+        prior_handler = signal.getsignal(signal.SIGALRM)
+        prior_timer = signal.getitimer(signal.ITIMER_REAL)
+        started = time.monotonic()
+        with patch.object(socket, "getaddrinfo", side_effect=lambda *args, **kwargs: time.sleep(1)):
+            with self.assertRaises(OSError):
+                self.w.http_get(f"/repos/{REPO}", started + 0.15)
+        self.assertLess(time.monotonic() - started, 0.35)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), prior_handler)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), prior_timer)
+
+    def test_nested_json_snapshot_and_config_fail_closed(self):
+        nested = "[" * 10000 + "0" + "]" * 10000
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, out = Path(directory) / "config.json", Path(directory) / "snapshot.json"
+            cfg.write_text(json.dumps(config()))
+            out.write_text(nested)
+            self.assertIsNone(self.w.Work(out, cfg).snapshot())
+            cfg.write_text(nested)
+            self.assertFalse(self.w.Work(out, cfg).configured())
+            self.assertIsNone(self.w.Work(out, cfg).snapshot())
+            self.assertEqual(self.w.main(["--config", str(cfg), "--output", str(out)]), 1)
+
+    def test_transport_nested_json_becomes_invalid_input_failure(self):
+        raw = ("[" * 10000 + "0" + "]" * 10000).encode()
+        class Response:
+            headers = {}
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read1(self, size):
+                result, self.body = self.body[:size], self.body[size:]
+                return result
+        response = Response()
+        response.body = raw
+        class Opener:
+            def open(self, *args, **kwargs): return response
+        with patch.object(self.w.urllib.request, "build_opener", return_value=Opener()):
+            with self.assertRaises(ValueError):
+                self.w.http_get(f"/repos/{REPO}", time.monotonic() + 1)
+
+    def test_nested_ignored_cache_fields_cannot_crash_failure_retention(self):
+        for location in ("root", "repository", "section", "data"):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as directory:
+                cfg, out = Path(directory) / "config.json", Path(directory) / "snapshot.json"
+                cfg.write_text(json.dumps(config()))
+                snap = self.collect()
+                target = {"root": snap, "repository": snap["repository"],
+                          "section": snap["prs"], "data": snap["prs"]["data"]}[location]
+                target["extra"] = "NESTED_PLACEHOLDER"
+                raw = json.dumps(snap).replace('"NESTED_PLACEHOLDER"', "[" * 600 + "0" + "]" * 600)
+                json.loads(raw)  # This is parseable, but too deep for deepcopy.
+                out.write_text(raw)
+                self.assertIsNone(self.w.Work(out, cfg).snapshot())
+                with patch.object(self.w, "http_get", side_effect=OSError("offline")):
+                    self.assertEqual(self.w.main(["--config", str(cfg), "--output", str(out)]), 1)
+                failure = self.w.Work(out, cfg).snapshot()
+                self.assertIsNotNone(failure)
+                self.assertTrue(failure["prs"]["refresh_failed"])
+                self.assertFalse(failure["prs"]["available"])
+
+    def test_network_decoder_failure_writes_honest_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, out = Path(directory) / "config.json", Path(directory) / "snapshot.json"
+            cfg.write_text(json.dumps(config()))
+            self.w.write_snapshot(out, self.collect())
+            with patch.object(self.w, "http_get", side_effect=RecursionError("deep provider JSON")):
+                self.assertEqual(self.w.main(["--config", str(cfg), "--output", str(out)]), 1)
+            snap = json.loads(out.read_text())
+            self.assertTrue(snap["prs"]["refresh_failed"])
+            self.assertEqual(snap["prs"]["error"], "invalid response")
 
 
 if __name__ == "__main__":

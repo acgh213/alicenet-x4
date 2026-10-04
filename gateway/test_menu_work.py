@@ -191,6 +191,19 @@ class WorkMenu(unittest.TestCase):
             frame = self.frame()
         self.assertTrue(frame["pbm"].startswith(b"P4\n800 480\n"))
 
+    def test_malformed_head_reader_returns_unavailable_and_menu_remains_usable(self):
+        changed = copy.deepcopy(self.snapshot)
+        changed["repository"].update(default_branch=None, head_sha={"bad": 1})
+        for section in ("prs", "build"):
+            changed[section] = {"available": False, "collected_at": None, "refresh_failed": True,
+                                "error": "unavailable", "data": None}
+        self.write(changed)
+        self.assertIsNone(self.menu.work.snapshot())
+        self.open_work()
+        self.assertIn("Unavailable", self.texts())
+        self.press("back")
+        self.assertEqual(self.frame()["card"], "menu")
+
 
 if __name__ == "__main__":
     unittest.main()

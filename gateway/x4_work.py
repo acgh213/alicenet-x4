@@ -4,13 +4,17 @@ from contextlib import contextmanager
 import copy
 import datetime as dt
 import hashlib
+import http.client
+import io
 import json
 import math
 import os
 from pathlib import Path
 import re
+import signal
 import tempfile
 import time
+import threading
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode
@@ -107,6 +111,112 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(newurl, code, "redirect refused", headers, fp)
 
 
+def _remaining(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Work collection deadline exceeded")
+    return min(5, remaining)
+
+
+class _DeadlineReader(io.RawIOBase):
+    """Bound every socket read, including http.client's header readline."""
+    def __init__(self, raw, sock, deadline):
+        self.raw, self.sock, self.deadline = raw, sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        self.sock.settimeout(_remaining(self.deadline))
+        result = self.raw.readinto(buffer)
+        _remaining(self.deadline)
+        return result
+
+    def close(self):
+        try:
+            self.raw.close()
+        finally:
+            super().close()
+
+
+class _DeadlineSocket:
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+    def makefile(self, mode, *args, **kwargs):
+        if mode != "rb":
+            raise ValueError("Work requires a read-only response stream")
+        raw = self.sock.makefile(mode, buffering=0)
+        return io.BufferedReader(_DeadlineReader(raw, self.sock, self.deadline))
+
+
+class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self.deadline = deadline
+
+    def http_open(self, request):
+        deadline = self.deadline
+        class Connection(http.client.HTTPConnection):
+            def connect(self):
+                super().connect()
+                self.sock = _DeadlineSocket(self.sock, deadline)
+        return self.do_open(Connection, request)
+
+
+class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self.deadline = deadline
+
+    def https_open(self, request):
+        deadline = self.deadline
+        class Connection(http.client.HTTPSConnection):
+            def connect(self):
+                super().connect()
+                self.sock = _DeadlineSocket(self.sock, deadline)
+        return self.do_open(Connection, request, context=self._context)
+
+
+@contextmanager
+def _request_deadline(deadline):
+    """Also interrupt DNS/connect/TLS on the Linux timer's main thread.
+
+    Socket reads use the same absolute budget on every platform. SIGALRM
+    covers blocking resolver/connect calls in the deployed Linux CLI.
+    """
+    use_alarm = hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+    if not use_alarm:
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+    def expired(signum, frame):
+        raise TimeoutError("Work collection deadline exceeded")
+    # An existing alarm belongs to the caller; do not replace it.
+    if previous_timer[0]:
+        yield
+        return
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, max(0.000001, deadline - started))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _decode_json(raw):
+    try:
+        return json.loads(raw)
+    except RecursionError as exc:
+        raise ValueError("Work JSON is too deeply nested") from exc
+
+
 def http_get(path, deadline):
     """One bounded unauthenticated GET to a generated API-relative path."""
     if not isinstance(path, str) or not path.startswith(f"/repos/{REPOSITORY}") or "://" in path:
@@ -116,8 +226,9 @@ def http_get(path, deadline):
         raise TimeoutError()
     request = urllib.request.Request(API + path, headers={
         "Accept": "application/vnd.github+json", "User-Agent": "alicenet-x4-work/1"})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=min(5, remaining)) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+                                        _DeadlineHTTPHandler(deadline), _DeadlineHTTPSHandler(deadline))
+    with _request_deadline(deadline), opener.open(request, timeout=min(5, remaining)) as response:
         length = response.headers.get("Content-Length")
         if length is not None and int(length) > BODY_LIMIT:
             raise ValueError("Work response too large")
@@ -138,13 +249,13 @@ def http_get(path, deadline):
             if total > BODY_LIMIT:
                 raise ValueError("Work response too large")
             chunks.append(chunk)
-    return json.loads(b"".join(chunks).decode("utf-8"))
+    return _decode_json(b"".join(chunks).decode("utf-8"))
 
 
 def _error(exc):
     if isinstance(exc, urllib.error.HTTPError):
         return "rate-limited" if exc.code in (403, 429) else "unavailable"
-    if isinstance(exc, (KeyError, TypeError, ValueError)):
+    if isinstance(exc, (KeyError, TypeError, ValueError, RecursionError)):
         return "invalid response"
     if isinstance(exc, TimeoutError):
         return "timed out"
@@ -189,7 +300,7 @@ def collect(config, *, now, previous=None, http_get=None, monotonic=None):
         if not isinstance(head, dict) or head.get("name") != branch:
             raise ValueError("branch changed")
         result["repository"].update(default_branch=branch, head_sha=_sha(head["commit"]["sha"]))
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
         if isinstance(exc, urllib.error.HTTPError) and exc.code in (301, 302, 303, 307, 308, 401, 404, 410):
             old = {}  # repository disappeared, became private, or moved
         prior_branch = old.get("repository", {}).get("default_branch")
@@ -226,7 +337,7 @@ def collect(config, *, now, previous=None, http_get=None, monotonic=None):
                 data = {"run": project_run(raw[0], branch, now) if raw else None}
             result[section] = {"available": True, "collected_at": now, "refresh_failed": False,
                                "error": None, "data": data}
-        except (OSError, ValueError, TypeError, KeyError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
             prior = old.get(section)
             if section == "build" and old.get("repository", {}).get("default_branch") != branch:
                 prior = None
@@ -255,23 +366,31 @@ def _read(path):
         raw = stream.read(BODY_LIMIT + 1)
     if len(raw) > BODY_LIMIT:
         raise ValueError("snapshot too large")
-    return json.loads(raw)
+    return _decode_json(raw)
 
 
 def validate_snapshot(snapshot, config):
     """Fail closed on malformed/foreign cached data before displaying it."""
+    def keys(value, expected):
+        if type(value) is not dict or set(value) != set(expected):
+            raise ValueError("invalid snapshot fields")
+    keys(snapshot, ("schema", "config_key", "stale_after_s", "repository", "prs", "build"))
     if not isinstance(snapshot, dict) or snapshot.get("schema") != 1 or snapshot.get("config_key") != config_key(config):
         raise ValueError("invalid snapshot")
     repo = snapshot["repository"]
+    keys(repo, ("full_name", "default_branch", "head_sha"))
     if repo["full_name"] != REPOSITORY or snapshot["stale_after_s"] != 1800:
         raise ValueError("wrong snapshot source")
     branch = repo["default_branch"]
     if branch is not None:
         _text(branch, 240)
-        if repo["head_sha"] is not None:
-            _sha(repo["head_sha"])
+    if repo["head_sha"] is not None:
+        _sha(repo["head_sha"])
+        if branch is None:
+            raise ValueError("head requires a branch")
     for name in ("prs", "build"):
         section = snapshot[name]
+        keys(section, ("available", "collected_at", "refresh_failed", "error", "data"))
         if type(section["available"]) is not bool or type(section["refresh_failed"]) is not bool:
             raise ValueError("invalid section")
         if section["error"] not in (None, "rate-limited", "unavailable", "invalid response",
@@ -289,6 +408,7 @@ def validate_snapshot(snapshot, config):
         if branch is None:
             raise ValueError("missing branch")
         data = section["data"]
+        keys(data, ("items", "truncated") if name == "prs" else ("run",))
         if name == "prs":
             if type(data["items"]) is not list or len(data["items"]) > 100 or type(data["truncated"]) is not bool:
                 raise ValueError("invalid cached pulls")
