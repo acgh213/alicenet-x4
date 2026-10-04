@@ -245,6 +245,14 @@ class Menu(HouseViews, InboxViews, LifeMenuMixin):
         button, press = ev["button"], ev["press"]
         result = {"moved": False, "label": None, "refresh": False, "defer_house": defer_house}
         shown = self._shown(device, ev)
+        # House confirmations are local even after Home/timer or frame eviction.
+        # A stale room/preview/receipt must never become a glance brief/refresh.
+        house_views = ('house', 'room', 'house_preview', 'house_receipt')
+        if button == 'confirm' and (state['view'] in house_views
+                or (shown or {}).get('view') in house_views
+                or ev.get('card') == 'house' or (ev.get('card') or '').startswith('house.')):
+            if shown is None or shown.get('view') != state['view']:
+                return result
         if ((shown or {}).get("view") in ("inbox", "inbox_detail")
                 or ev.get("card") == "inbox" or (ev.get("card") or "").startswith("inbox.")
                 or state["view"] in ("inbox", "inbox_detail")):

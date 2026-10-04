@@ -26,7 +26,7 @@ class Flow(unittest.TestCase):
         self.write()
         self.app = x4d.App({'db': str(Path(self.tmp.name) / 'db'), 'glance_snapshot': str(self.path)})
         import x4_house_actions
-        self.control = x4_house_actions.Controls(self.app.store, lambda: self.cfg, self.ha)
+        self.control = x4_house_actions.Controls(self.app.store, lambda: self.cfg, self.ha, clock=lambda: NOW)
         self.app.menu.house_controls = self.control
         self.seq = 0
 
@@ -207,6 +207,41 @@ class Flow(unittest.TestCase):
             result['house_execute']()
         self.assertEqual(self.app.menu.state('x4-01')['house_action']['id'], newer)
         self.assertEqual(self.app.menu.state('x4-01')['view'], 'house_preview')
+
+    def test_concurrent_confirm_claims_preview_once(self):
+        import concurrent.futures
+        import threading
+        from unittest.mock import patch
+        frame = self.preview()
+        menu = self.app.menu
+        read = menu.state
+        barrier = threading.Barrier(2)
+        def simultaneous(device):
+            result = read(device)
+            barrier.wait(timeout=2)
+            return result
+        ev = {'card': frame['card'], 'etag': frame['etag'], 'button': 'confirm', 'press': 'short'}
+        with patch.object(menu, 'state', side_effect=simultaneous):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(menu.handle, 'x4-01', dict(ev, seq=n), NOW, TZ, True) for n in (1, 2)]
+                results = [f.result() for f in futures]
+        executors = [r['house_execute'] for r in results if r.get('house_execute')]
+        self.assertEqual(len(executors), 1)
+        self.ha.fetch.side_effect = [state('light.lr', 'off'), state('light.lr', 'on')]
+        executors[0]()
+        self.assertEqual(read('x4-01')['house_receipt']['outcome'], 'verified')
+        self.ha.set_light.assert_called_once()
+
+    def test_late_uncertain_or_conflicting_terminal_cannot_regress_verified(self):
+        frame = self.preview()
+        self.ha.fetch.side_effect = [state('light.lr', 'off'), state('light.lr', 'on')]
+        self.press('confirm', frame=frame)
+        menu = self.app.menu
+        saved = menu.state('x4-01')
+        action = saved['house_action']
+        for outcome in ('uncertain', 'rejected', 'cancelled'):
+            menu._update_house_receipt('x4-01', action, {'id': action['id'], 'outcome': outcome, 'at': NOW + 5})
+            self.assertEqual(menu.state('x4-01')['house_receipt'], saved['house_receipt'])
 
     def test_default_app_has_no_executor(self):
         default = x4d.App(dict(self.app.cfg, db=str(Path(self.tmp.name) / 'default-db')))
