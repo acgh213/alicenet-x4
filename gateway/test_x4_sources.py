@@ -119,4 +119,45 @@ class Sources(unittest.TestCase):
             self.assertEqual(json.loads(p.read_text())['observed_at'],NOW)
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
 
+
+HOUSE = {'stale_after_s':1800,'rooms':[{'name':'Living Room','entities':[
+    {'entity':'light.lr','label':'Light'},{'entity':'climate.t','label':'Thermostat'}]}]}
+
+
+class HouseSource(unittest.TestCase):
+    def run_collect(self, states, previous=None, house=HOUSE, now=NOW):
+        self.urls=[]
+        def get(url, headers, timeout, cap):
+            self.urls.append(url)
+            if '/calendars/' in url: return []
+            if url.endswith('weather.forecast_home'): return {'state':'sunny'}
+            entity=url.rsplit('/',1)[1]
+            if entity not in states: raise RuntimeError('offline')
+            return dict(states[entity], entity_id=entity, attributes=states[entity].get('attributes',{}))
+        with patch.dict(os.environ, {'TEST_HA':'private-token'}):
+            return x4_sources.collect(CONFIG, now=now, previous=previous, http_get=get, house=house)
+
+    def test_house_is_collected_through_the_same_ha_client(self):
+        s=self.run_collect({'light.lr':{'state':'off'},'climate.t':{'state':'cool'}})
+        self.assertTrue(s['house']['available'])
+        self.assertEqual([i['state'] for i in s['house']['rooms'][0]['items']], ['off','cool'])
+        self.assertIn('http://ha.test:8123/api/states/light.lr', self.urls)
+
+    def test_no_house_config_means_no_house_section(self):
+        self.assertNotIn('house', self.run_collect({}, house=None))
+
+    def test_ha_down_keeps_old_house_marked_failed_not_freshened(self):
+        old=self.run_collect({'light.lr':{'state':'on'},'climate.t':{'state':'cool'}})
+        s=self.run_collect({}, previous=old, now=NOW+900)
+        self.assertTrue(s['house']['refresh_failed'])
+        self.assertEqual(s['house']['observed_at'], NOW)
+        self.assertEqual(s['house']['rooms'][0]['items'][0]['state'], 'on')
+
+    def test_changed_allowlist_drops_old_house_data(self):
+        old=self.run_collect({'light.lr':{'state':'on'},'climate.t':{'state':'cool'}})
+        other={'stale_after_s':1800,'rooms':[{'name':'Bedroom','entities':[{'entity':'light.bed','label':'Light'}]}]}
+        s=self.run_collect({}, previous=old, house=other, now=NOW+900)
+        self.assertEqual((s['house']['available'], s['house']['refresh_failed']), (False, True))
+        self.assertNotIn('Living Room', json.dumps(s['house']))
+
 if __name__=='__main__': unittest.main()

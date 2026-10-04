@@ -8,6 +8,7 @@ Views: glance -> menu -> {agents -> agent -> record -> choice, reports -> record
 status, soon.<name>}. All state lives here on the host, per device, in SQLite.
 """
 import json
+import re
 import time
 
 from PIL import Image, ImageDraw
@@ -22,7 +23,6 @@ BLURBS = {"home": "Clock, weather, agenda", "work": "PRs, issues, CI",
           "life": "Routines and reminders", "reports": "Everything to read",
           "inbox": "Approved message threads", "status": "Device and sources"}
 PLANNED = {"work": "Read-only pull requests, review requests, issues and CI state.",
-           "house": "Read-only rooms and devices from Home Assistant, then one confirmed, reversible control.",
            "life": "Consented routines, reminders and transitions. Rest stays a valid plan.",
            "inbox": "Approved Telegram threads only, read-only. Replies need a stronger confirmation."}
 ROWS = 6          # list rows per screen
@@ -40,6 +40,38 @@ def attention(summary):
     decisions = sum(row["decisions"] for row in summary)
     unread = sum(row["reports"] for row in summary)
     parts = ([_plural(decisions, "decision")] if decisions else []) + ([f"{unread} unread"] if unread else [])
+    return " · ".join(parts)
+
+
+def _minutes(age):
+    age = max(0, age)
+    return f"{round(age / 60)} min" if age < 7200 else f"{round(age / 3600)} h"
+
+
+def _slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "room"
+
+
+def house_freshness(house, now):
+    """One plain line: fresh, stale, or failed-and-showing-old. Never silently old."""
+    age = now - house.get("observed_at", now)
+    stale = age > house.get("stale_after_s", 1800)
+    if house.get("refresh_failed"):
+        return f"refresh failed · showing {_minutes(age)} old" + (" · STALE" if stale else "")
+    if stale:
+        return f"STALE · observed {_minutes(age)} ago"
+    return "observed just now" if age < 60 else f"observed {_minutes(age)} ago"
+
+
+def room_summary(room):
+    items = room["items"]
+    parts = [f"{len(items)} device{'' if len(items) == 1 else 's'}"]
+    on = sum(1 for i in items if i.get("on") is True)
+    gone = sum(1 for i in items if not i.get("available"))
+    if on:
+        parts.append(f"{on} on")
+    if gone:
+        parts.append(f"{gone} unavailable")
     return " · ".join(parts)
 
 
@@ -128,8 +160,20 @@ class Menu:
         return {"pbm": pbm, "etag": tag, "card": card, "session": session_s, "image": image,
                 "actions": ("confirm", "confirm_long", "back", "up", "down")}
 
+    def _house(self):
+        """The house snapshot section, or None when House is not configured."""
+        house = self.glance.snapshot().get("house")
+        return house if isinstance(house, dict) else None
+
+    def _rooms(self):
+        house = self._house()
+        return house.get("rooms", []) if house and house.get("available") else []
+
     def _settle(self, device, state, now):
-        """A record that vanished or expired drops Cassie back to its list, not an error."""
+        """A record or room that vanished drops Cassie back to its list, not an error."""
+        if state["view"] == "room" and state.get("room") not in [r["name"] for r in self._rooms()]:
+            state = dict(state, view="house", room=None, cursor=0)
+            self._save(device, state)
         if state["view"] in ("record", "choice") and state["record"]:
             live = {r["id"] for r in self.records.list(now)}
             if state["record"] not in live:
@@ -184,7 +228,7 @@ class Menu:
             if target == "home":
                 self.go_home(device)
                 return dict(result, moved=True)
-            state.update(view=target if target in ("agents", "reports", "status") else "soon." + target,
+            state.update(view=target if target in ("agents", "reports", "status", "house") else "soon." + target,
                          cursor=0, agent=None, record=None)
         else:
             return result
@@ -307,6 +351,33 @@ class Menu:
         self._save(device, state)
         return dict(result, moved=True)
 
+    def _on_house(self, device, state, button, press, shown, now, result):
+        rooms = self._rooms()
+        if button == "confirm" and press == "long":
+            return dict(result, refresh=True)  # same as the dashboard: hold refreshes sources
+        if button in ("up", "down") and rooms:
+            state["cursor"] = self._move(state, button, len(rooms))
+        elif button == "back":
+            self._list_back(device, state)
+            return dict(result, moved=True)
+        elif button == "confirm" and rooms and shown is not None:
+            names = [r["name"] for r in rooms]
+            wanted = shown.get("highlighted")
+            state.update(view="room", room=wanted if wanted in names else names[min(state["cursor"], len(names) - 1)])
+        else:
+            return result
+        self._save(device, state)
+        return dict(result, moved=True)
+
+    def _on_room(self, device, state, button, press, shown, now, result):
+        if button == "confirm" and press == "long":
+            return dict(result, refresh=True)
+        if button == "back":
+            state.update(view="house", room=None)
+            self._save(device, state)
+            return dict(result, moved=True)
+        return result  # read-only: no control exists on this page yet
+
     def _on_status(self, device, state, button, press, shown, now, result):
         if button == "back":
             self._list_back(device, state)
@@ -334,7 +405,7 @@ class Menu:
             _text(image, notice, (24, 424, 776, 444), 14, True)
         _text(image, hint, (24, 456, 776, 476), 13, True)
 
-    def _rows(self, image, rows, cursor):
+    def _rows(self, image, rows, cursor, split=460):
         top = 124
         start = (cursor // ROWS) * ROWS
         for index, (left, right) in enumerate(rows[start:start + ROWS]):
@@ -342,9 +413,9 @@ class Menu:
             mark = start + index == cursor
             if mark:
                 ImageDraw.Draw(image).rectangle((24, y, 776, y + 42), outline=0, width=2)
-            _text(image, ("▶ " if mark else "   ") + left, (34, y + 9, 460, y + 35), 20, mark)
+            _text(image, ("▶ " if mark else "   ") + left, (34, y + 9, split, y + 35), 20, mark)
             if right:
-                _text(image, right, (470, y + 11, 766, y + 33), 17, mark)
+                _text(image, right, (split + 10, y + 11, 766, y + 33), 17, mark)
         if len(rows) > ROWS:
             _text(image, f"{start + 1}–{min(start + ROWS, len(rows))} of {len(rows)}", (600, 396, 776, 414), 13)
 
@@ -353,8 +424,12 @@ class Menu:
         if view == "menu":
             image = self._canvas("Destinations", "Alicenet · X4", tz, now)
             agents = self.records.agents(now)
+            house = self._house()
             counts = {"agents": attention(agents),
-                      "reports": f"{sum(r['reports'] for r in agents)} unread" if any(r["reports"] for r in agents) else ""}
+                      "reports": f"{sum(r['reports'] for r in agents)} unread" if any(r["reports"] for r in agents) else "",
+                      "house": "not set up" if house is None else
+                               "unreachable" if not house.get("available") else
+                               f"{len(house['rooms'])} room{'' if len(house['rooms']) == 1 else 's'}"}
             rows = [(TITLES[d], counts.get(d) or ("soon" if d in PLANNED else BLURBS[d])) for d in DESTINATIONS]
             # All eight destinations fit when rows are a little tighter than lists.
             for index, (left, right) in enumerate(rows):
@@ -401,6 +476,8 @@ class Menu:
             return self._render_record(state, now, tz)
         if view == "status":
             return self._render_status(device, state, now, tz), "status", {}
+        if view in ("house", "room"):
+            return self._render_house(state, now, tz)
         name = view.split(".", 1)[1]
         image = self._canvas(TITLES[name], f"Destinations › {TITLES[name]}", tz, now)
         _text(image, "Not connected yet", (24, 140, 776, 180), 26, True)
@@ -408,6 +485,40 @@ class Menu:
         _text(image, "Planned in docs/future-surface.md. Nothing here is live data.", (24, 330, 776, 352), 15)
         self._footer(image, "Back: destinations")
         return image, view, {}
+
+    def _render_house(self, state, now, tz):
+        house = self._house()
+        if state["view"] == "room":
+            room = next(r for r in self._rooms() if r["name"] == state["room"])
+            image = self._canvas(room["name"], "House › " + room["name"], tz, now)
+            pitch = min(50, 286 // max(1, len(room["items"])))  # 8 rows fit; fewer rows breathe
+            for index, item in enumerate(room["items"]):
+                y = 124 + index * pitch
+                _text(image, item["label"], (24, y + 4, 300, y + 30), 19, True)
+                if item.get("available"):
+                    value = " · ".join(p for p in (item["state"], item.get("detail")) if p)
+                    _text(image, value, (310, y + 4, 776, y + 30), 19)
+                else:
+                    _text(image, "— " + item["state"].upper(), (310, y + 6, 776, y + 30), 17, True)
+            self._footer(image, "read-only for now · hold: refresh · Back: rooms", house_freshness(house, now))
+            return image, ("house." + _slug(room["name"]))[:48], {}
+        image = self._canvas("House", "Destinations › House", tz, now)
+        if house is None:
+            _text(image, "House isn't set up yet", (24, 140, 776, 180), 26, True)
+            _text(image, "List rooms and entities in ~/.config/x4d/house.json; the ten-minute collector "
+                  "reads them from Home Assistant.", (24, 196, 776, 300), 19, lines=4)
+            self._footer(image, "Back: destinations")
+            return image, "house", {}
+        if not house.get("available"):
+            _text(image, "Home Assistant unreachable", (24, 140, 776, 180), 26, True)
+            _text(image, "No earlier readings to show. Hold Confirm to try again.", (24, 196, 776, 230), 19)
+            self._footer(image, "hold: refresh · Back: destinations")
+            return image, "house", {}
+        rooms = house["rooms"]
+        cursor = min(state["cursor"], len(rooms) - 1)
+        self._rows(image, [(r["name"], room_summary(r)) for r in rooms], cursor, split=330)
+        self._footer(image, "▲ ▼ choose · Confirm: open · hold: refresh · Back", house_freshness(house, now))
+        return image, "house", {"highlighted": rooms[cursor]["name"]}
 
     def _badge(self, item, now, with_agent):
         status = {"open": "needs you", "unread": "unread", "answered": f"answered: {item['answer']}",

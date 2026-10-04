@@ -29,8 +29,23 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
   recorded and the screen says so.
 - On a report, Confirm marks that revision read.
 - Long Confirm on any record asks Muse for fuller context. It never approves anything.
-- Work, House, Life and Inbox say "Not connected yet" until their adapters exist.
+- Work, Life and Inbox say "Not connected yet" until their adapters exist.
 - An unattended timer/boot wake returns the menu to the dashboard.
+
+House (read-only):
+
+- Rooms come from `~/.config/x4d/house.json`, an allowlist with your own room names
+  and labels (HA areas are often wrong). See `house.example.json`. Up to 8 rooms of 8
+  entities: lights, switches, climate, sensors, binary sensors, media players, fans,
+  covers, locks. People, trackers and media titles are refused or never read.
+- The ten-minute collector reads them through the same HA client as weather; x4d
+  never holds the HA token. Remove the file and House says "not set up".
+- House lists rooms (`5 devices · 3 on · 1 unavailable`); Confirm opens one.
+  Unavailable, unknown and unreadable entities are shown as such, never as off.
+- Freshness is always on screen: `observed 4 min ago`, `STALE · observed 52 min ago`,
+  or `refresh failed · showing 20 min old`. Hold Confirm to refresh now.
+- Confirm on a room page does nothing yet: the first control will be one reversible,
+  allowlisted action with its own confirmation and receipt.
 
 Device behaviour:
 

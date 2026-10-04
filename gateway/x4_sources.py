@@ -20,6 +20,7 @@ from urllib.parse import quote, urlencode
 CLOCK_ROOT = Path('/home/cassie/services/clock-control')
 sys.path.insert(0, str(CLOCK_ROOT))
 import clock_feeds as feeds
+import x4_house
 
 
 def epoch(value):
@@ -105,7 +106,22 @@ def _calendar(config, source, http_get, now):
             'window_end':window['end'], 'events':approved, 'approved_fields':source['fields']}
 
 
-def collect(config, *, now=None, previous=None, http_get=None):
+def _house(config, house, http_get, now, previous):
+    """Allowlisted HA entities through the same HA client. Old data stays old and marked."""
+    identity = hashlib.sha256(json.dumps(house, sort_keys=True).encode()).hexdigest()
+    try:
+        fetch = lambda entity: feeds._ha_get(config, '/api/states/' + quote(entity, safe='.'), http_get)
+        out = x4_house.collect(house, fetch, now)
+        out['config_key'] = identity
+        return out
+    except Exception:
+        old = (previous or {}).get('house')
+        if isinstance(old, dict) and old.get('available') and old.get('config_key') == identity:
+            return dict(copy.deepcopy(old), refresh_failed=True)
+        return {'available': False, 'refresh_failed': True}
+
+
+def collect(config, *, now=None, previous=None, http_get=None, house=None):
     config = feeds.validate_config(config)  # keeps existing consent/privacy gates
     now = time.time() if now is None else now
     if number(now) is None:
@@ -132,6 +148,8 @@ def collect(config, *, now=None, previous=None, http_get=None):
                         retained=True,previous_fields=old.get('approved_fields',[]))
                     result[key]['approved_fields']=source['fields']
             result[key]['refresh_failed'] = True
+    if house is not None:
+        result['house'] = _house(config, x4_house.validate_config(house), http_get, now, previous)
     return result
 
 
@@ -153,6 +171,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='/home/cassie/.config/clock-noticeboard/feed-config.json')
     p.add_argument('--output',default='/home/cassie/.local/state/x4d/glance.json')
+    p.add_argument('--house',default='/home/cassie/.config/x4d/house.json',
+                   help='Allowlisted HA entities for the House page; skipped when the file is absent.')
     args = p.parse_args(argv)
     # Same launcher credentials as clock_feed_runner; never copy to Pi or config.
     from dotenv import dotenv_values
@@ -163,10 +183,12 @@ def main(argv=None):
     try:
         previous = json.loads(Path(args.output).read_text())
     except (OSError,ValueError): pass
-    result = collect(feeds.load_config(args.config),previous=previous)
+    house = json.loads(Path(args.house).read_text()) if Path(args.house).is_file() else None
+    result = collect(feeds.load_config(args.config),previous=previous,house=house)
     write_snapshot(args.output,result)
     print(json.dumps({k:{'available':v.get('available',False), 'refresh_failed':v.get('refresh_failed',False),
-                         'event_count':len(v.get('events',[]))} for k,v in result.items() if k in ('weather','calendar')}))
+                         'event_count':len(v.get('events',[]))} for k,v in result.items()
+                      if k in ('weather','calendar','house')}))
     return 0
 
 if __name__ == '__main__':
