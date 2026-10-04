@@ -13,7 +13,12 @@ class PreviewLife(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, PYTHONPATH=str(root / 'gateway'))
             env.pop('PYTHONHOME', None)
-            result = subprocess.run([sys.executable, str(root / 'tools/preview_life.py'), tmp],
+            # An offline preview must work without the private collector dependency.
+            code = ("import builtins, runpy, sys; original=builtins.__import__; "
+                    "builtins.__import__=lambda name,*a,**k: (_ for _ in ()).throw(ImportError('private collector forbidden')) "
+                    "if name == 'clock_feeds' else original(name,*a,**k); "
+                    "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+            result = subprocess.run([sys.executable, '-c', code, str(root / 'tools/preview_life.py'), tmp],
                                     env=env, text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             out = Path(tmp)

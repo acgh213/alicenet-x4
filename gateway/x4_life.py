@@ -54,7 +54,7 @@ def calendar(snapshot, now, tz):
             or not isinstance(source.get('window_end'), str)):
         return {'available': False}, [], 'Calendar unavailable'
     # Reuse the collector's retained-field projection, including title provenance.
-    from x4_sources import project_events
+    from x4_calendar import project_events
     raw = [event for event in source['events'][:256] if isinstance(event, dict)]
     # A title with no originating field is not evidence of summary consent.
     proven = [dict(event, _title_field=event.get('_title_field', 'unproven')) for event in raw]
