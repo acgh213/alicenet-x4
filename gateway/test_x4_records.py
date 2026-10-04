@@ -100,6 +100,30 @@ class Records(unittest.TestCase):
         ids = [r["id"] for r in self.records.list(agent="pyrrha", now=1_790_000_000)]
         self.assertEqual(ids, ["pyrrha.menu-order", "pyrrha.memo"])
 
+    def test_revision_survives_remove_recreate_restart_for_answers_and_acks(self):
+        for kind, body in (("decision", decision()), ("report", report())):
+            ident = body["id"]
+            first = self.put(body)
+            self.records.remove(ident)
+            self.records = self.mod.Records(self.store)
+            replacement = self.put(body, now=200)
+            self.assertGreater(replacement["revision"], first["revision"], kind)
+            if kind == "decision":
+                got = self.records.answer(ident, first["revision"], "approve", now=201, source="x4-01")
+            else:
+                got = self.records.ack(ident, first["revision"], now=201)
+            self.assertEqual(got["outcome"], "stale")
+
+    def test_existing_revision_is_seeded_when_counter_schema_is_added(self):
+        body = decision()
+        self.put(body)
+        with self.store._db() as db:
+            db.execute("UPDATE records SET revision=9 WHERE id=?", (body["id"],))
+            db.execute("DROP TABLE IF EXISTS record_revisions")
+        self.records = self.mod.Records(self.store)
+        self.records.remove(body["id"])
+        self.assertEqual(self.put(body)["revision"], 10)
+
     def test_remove(self):
         self.put(report())
         self.assertTrue(self.records.remove("vesper.weekly"))

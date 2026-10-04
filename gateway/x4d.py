@@ -14,6 +14,8 @@ import hmac
 import io
 import ipaddress
 import json
+import os
+import stat
 import shlex
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import x4_protocol
+import x4_publisher
 import x4_render
 from x4_store import Store
 
@@ -41,6 +44,7 @@ def allowed(ip, cidrs):
 
 class App:
     def __init__(self, cfg):
+        x4_publisher.validate_config(cfg)
         self.cfg = cfg
         self.store = Store(cfg["db"], dwell_s=cfg.get("dwell_s", 3600))
         self.tz = zoneinfo.ZoneInfo(cfg.get("tz", "America/New_York"))
@@ -74,6 +78,10 @@ class App:
 
     def is_agent(self, token):
         want = self.cfg.get("agent_token_sha256", "")
+        return bool(want) and hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), want)
+
+    def is_publisher(self, token):
+        want = self.cfg.get(x4_publisher.TOKEN_KEY, "")
         return bool(want) and hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), want)
 
     def render(self, entry, now):
@@ -282,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard():
             return
         path = urlsplit(self.path).path
+        if path == "/x4/v1/publisher":
+            return self._publisher()
         try:
             if path == "/x4/v1/events":
                 return self._events()
@@ -292,6 +302,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "not found"})
         except ValueError as exc:  # includes json.JSONDecodeError
             self._json(400, {"ok": False, "error": str(exc)})
+
+    def _publisher(self):
+        if not self.app.is_publisher(self._token()):
+            return self._json(401, {"ok": False, "error": "publisher token required"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 <= length <= x4_protocol.MAX_REQUEST or self.headers.get("Transfer-Encoding"):
+                raise ValueError("invalid publisher request")
+            body = json.loads(self.rfile.read(length) or b"null")
+            out = x4_publisher.dispatch(self.app, body, time.time())
+        except PermissionError:
+            return self._json(403, {"ok": False, "error": "publisher scope required"})
+        except (ValueError, TypeError, KeyError):
+            return self._json(400, {"ok": False, "error": "invalid publisher request"})
+        return self._json(200, {"ok": True, **out}, headers={"Cache-Control": "no-store"})
 
     def _frame(self, query):
         device = self.app.device_for(self._token())
@@ -383,11 +408,19 @@ def make_server(app):
     return httpd
 
 
+def load_config(path):
+    with open(path, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+        if x4_publisher.TOKEN_KEY in cfg and stat.S_IMODE(os.fstat(fh.fileno()).st_mode) != 0o600:
+            raise ValueError("publisher runtime config must have mode 0600")
+    x4_publisher.validate_config(cfg)
+    return cfg
+
+
 def main(argv):
     if len(argv) != 2:
         sys.exit("usage: x4d.py CONFIG.json")
-    with open(argv[1], encoding="utf-8") as fh:
-        app = App(json.load(fh))
+    app = App(load_config(argv[1]))
     if isinstance(app.cfg.get("forward_cmd"), str):
         app.cfg["forward_cmd"] = shlex.split(app.cfg["forward_cmd"])
 

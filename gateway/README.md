@@ -85,6 +85,21 @@ Agents publish typed records through `POST /x4/v1/agent` with the agent token:
 The gateway renders long reports into screens itself (summary, then each section,
 wrapped to fit); agents never format for the panel.
 
+### Restricted Elsie publisher
+
+The optional `POST /x4/v1/publisher` uses an independent credential and permits
+only Elsie's typed report/decision put/get/list/remove and own answer/read polling.
+It is disabled when `elsie_publisher_token_sha256` is absent from private runtime
+config. `x4ctl` uses this endpoint when its mode0600 config has `publisher_token`
+instead of `agent_token`; it never falls back to the broad credential. Record author
+must be `elsie` and id must begin `elsie.`. No slides, device/menu operations, HA,
+other private records or glance previews are available with that credential.
+
+See [Elsie operations](../docs/elsie-operations.md) for the configuration contract,
+markdown/report/wait workflow, separate approval gates and pending runtime activation.
+Records retain id/revision counters across remove/recreate so old device frames and
+wait revisions cannot authorize replacement content. Removed bodies are not retained.
+
 ### From the command line
 
 `~/.local/bin/x4ctl` wraps `gateway/x4ctl.py` (config `~/.config/x4ctl/config.json`).
