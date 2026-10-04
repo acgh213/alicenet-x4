@@ -58,7 +58,7 @@ class GlanceHTTP(Server):
     def test_confirm_captures_http_frame_context_before_retry_refresh(self):
         from test_x4_dashboard import fixture
         snapshot=fixture()
-        snapshot['calendar']['events']=[{'summary':'HTTP CAPTURED','start':'2099-01-01'}]
+        snapshot['calendar']['events']=[{'summary':'HTTP CAPTURED','_title_field':'summary','start':'2099-01-01'}]
         self.app.glance.path.write_text(json.dumps(snapshot))
         _,headers,_=self.call('GET','/x4/v1/frame')
         batch=self.batch(button='confirm')

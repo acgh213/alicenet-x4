@@ -19,7 +19,7 @@ class Glance(unittest.TestCase):
     def test_brief_matches_displayed_page_and_survives_snapshot_refresh(self):
         from test_x4_dashboard import fixture, NOW, TZ
         snap=fixture()
-        snap['calendar']['events']=[{'summary':f'Shown {i:02}', 'start':f'2026-10-{4+i:02}'}
+        snap['calendar']['events']=[{'summary':f'Shown {i:02}', '_title_field':'summary', 'start':f'2026-10-{4+i:02}'}
                                     for i in reversed(range(12))]
         snap['calendar']['events'].append({'summary':'ENDED','start':'2026-10-02','end':'2026-10-03'})
         self.path.write_text(json.dumps(snap))

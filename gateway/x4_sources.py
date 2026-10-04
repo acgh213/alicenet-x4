@@ -75,7 +75,7 @@ def project_events(events, fields, *, retained=False, previous_fields=()):
         if not isinstance(e,dict): continue
         row={}
         if retained:
-            title_field=e.get('_title_field','summary')
+            title_field=e.get('_title_field')
             if title_field in fields and title_field in previous_fields and e.get('summary'):
                 row.update(summary=text(e['summary']),_title_field=title_field)
         else:
@@ -103,7 +103,8 @@ def _calendar(config, source, http_get, now):
     approved = project_events(events,source['fields'])
     return {'available':True, 'observed_at':now, 'checked_at':now,
             'stale_after_s':source['stale_after_s'], 'window_start':window['start'],
-            'window_end':window['end'], 'events':approved, 'approved_fields':source['fields']}
+            'window_end':window['end'], 'events':approved, 'approved_fields':source['fields'],
+            'hidden_event_count': max(0, len(events) - len(approved))}
 
 
 def _house(config, house, http_get, now, previous):
@@ -146,6 +147,7 @@ def collect(config, *, now=None, previous=None, http_get=None, house=None):
                 if key=='calendar':
                     result[key]['events']=project_events(old.get('events',[]),source['fields'],
                         retained=True,previous_fields=old.get('approved_fields',[]))
+                    result[key]['hidden_event_count']=old.get('hidden_event_count',0) + len(old.get('events',[])) - len(result[key]['events'])
                     result[key]['approved_fields']=source['fields']
             result[key]['refresh_failed'] = True
     if house is not None:

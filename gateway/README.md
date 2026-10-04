@@ -29,7 +29,12 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
   recorded and the screen says so.
 - On a report, Confirm marks that revision read.
 - Long Confirm on any record asks Muse for fuller context. It never approves anything.
-- Life and Inbox say "Not connected yet" until their adapters exist.
+- Life opens read-only Now / Day / opt-in Notes from the existing consented calendar
+  snapshot and manual `life.reminder.*`, `life.rest.*`, `life.play.*` report IDs.
+  Left/Right changes these views; Confirm reads only (no acknowledgment/Muse), hold
+  refreshes existing sources. See [docs/life.md](../docs/life.md) for provenance,
+  partial-consent and physical gates. This feature lane is not deployed yet.
+- Inbox says "Not connected yet" on this isolated base until its adapter is integrated.
 - An unattended timer/boot wake returns the menu to the dashboard.
 
 House (read-only):
