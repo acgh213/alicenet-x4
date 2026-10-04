@@ -12,7 +12,7 @@
       {"entity": "binary_sensor.bedroom_window", "label": "Window"}
     ]},
     {"name": "Laundry", "entities": [
-      {"entity": "switch.washer_plug", "label": "Washer plug"}
+      {"entity": "switch.washer_plug", "label": "Washer plug", "protected": true}
     ]}
   ]
 }

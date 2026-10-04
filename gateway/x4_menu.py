@@ -496,7 +496,8 @@ class Menu:
                 y = 124 + index * pitch
                 _text(image, item["label"], (24, y + 4, 300, y + 30), 19, True)
                 if item.get("available"):
-                    value = " · ".join(p for p in (item["state"], item.get("detail")) if p)
+                    value = " · ".join(p for p in (item["state"], item.get("detail"),
+                                                   "protected" if item.get("protected") else "") if p)
                     _text(image, value, (310, y + 4, 776, y + 30), 19)
                 else:
                     _text(image, "— " + item["state"].upper(), (310, y + 6, 776, y + 30), 17, True)

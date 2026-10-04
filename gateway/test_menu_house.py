@@ -158,6 +158,15 @@ class House(unittest.TestCase):
         self.write(smaller)
         self.assertEqual(self.frame()["card"], "house")
 
+    def test_protected_device_says_so_on_its_room_page(self):
+        body = house()
+        body["rooms"][1]["items"][0]["protected"] = True
+        self.write(body)
+        self.open_house()
+        self.press("down")
+        self.press("confirm")
+        self.assertIn("on · 65% · protected", self.texts())
+
     def test_timer_wake_from_house_returns_home(self):
         self.open_house()
         self.menu.wake("x4-01", "timer")

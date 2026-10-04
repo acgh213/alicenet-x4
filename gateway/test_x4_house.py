@@ -132,3 +132,38 @@ class Collect(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Protected(unittest.TestCase):
+    """Some devices must never be switched from the X4 (e.g. the washer's smart plug)."""
+
+    def setUp(self):
+        body = config()
+        body["rooms"][1]["entities"][0]["protected"] = True
+        self.cfg = x4_house.validate_config(body)
+        self.house = x4_house.collect(self.cfg, lambda e: state(e, "on", brightness=255), now=NOW)
+
+    def items(self):
+        return {i["entity"]: i for room in self.house["rooms"] for i in room["items"]}
+
+    def test_protected_flag_is_validated_and_carried_to_the_snapshot(self):
+        self.assertTrue(self.items()["switch.washer"]["protected"])
+        self.assertFalse(self.items()["light.lr"]["protected"])
+        with self.assertRaises(ValueError):
+            x4_house.validate_config(config(rooms=[{"name": "R", "entities": [
+                {"entity": "switch.x", "label": "X", "protected": "yes"}]}]))
+
+    def test_protected_unreadable_entity_stays_protected(self):
+        house = x4_house.collect(self.cfg, lambda e: state(e, "on") if e != "switch.washer" else 1 / 0, now=NOW)
+        washer = [i for r in house["rooms"] for i in r["items"] if i["entity"] == "switch.washer"][0]
+        self.assertTrue(washer["protected"])
+
+    def test_controllable_excludes_protected_unavailable_and_non_lights(self):
+        items = self.items()
+        self.assertTrue(x4_house.controllable(items["light.lr"]))
+        self.assertFalse(x4_house.controllable(items["switch.washer"]))           # protected
+        self.assertFalse(x4_house.controllable(dict(items["switch.washer"], protected=False)))  # switches: no
+        self.assertFalse(x4_house.controllable(items["climate.t"]))
+        self.assertFalse(x4_house.controllable(dict(items["light.lr"], available=False)))
+        self.assertFalse(x4_house.controllable(dict(items["light.lr"], protected=True)))
+        self.assertFalse(x4_house.controllable({"domain": "light", "available": True}))  # no flag = not proven safe

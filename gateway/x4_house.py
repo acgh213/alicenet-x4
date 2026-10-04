@@ -5,12 +5,15 @@ areas, which are often wrong). Rules the panel depends on:
 
 - unavailable, unknown and unreadable are never shown as off, closed or zero;
 - people, trackers and media titles never enter this data path;
-- there is no action field yet: the first control will be added deliberately.
+- there is no action field yet: the first control will be added deliberately;
+- `"protected": true` marks a device that must NEVER be switched from the X4 (Cassie's
+  washer smart plug). Any control path must go through controllable(), which refuses it.
 """
 import datetime as dt
 import math
 import re
 
+CONTROLLABLE_DOMAINS = ("light",)  # the first control is a light toggle; widen deliberately
 DOMAINS = ("light", "switch", "climate", "sensor", "binary_sensor", "media_player", "fan", "cover", "lock")
 LIMITS = {"rooms": 8, "entities": 8, "name": 24, "label": 24}
 _ENTITY = re.compile(r"^[a-z_]+\.[a-z0-9_]{1,80}$")
@@ -55,11 +58,15 @@ def validate_config(body):
             raise ValueError(f"each room lists 1-{LIMITS['entities']} entities.")
         items = []
         for entry in entities:
-            _exact(entry, {"entity", "label"}, "entity entry")
+            _exact(entry, {"entity", "label", "protected"}, "entity entry")
             entity = entry.get("entity")
             if type(entity) is not str or not _ENTITY.fullmatch(entity) or entity.split(".")[0] not in DOMAINS:
                 raise ValueError(f"entity {entity!r} must be a {', '.join(DOMAINS)} entity id.")
-            items.append({"entity": entity, "label": _name(entry.get("label"), "label", LIMITS["label"])})
+            protected = entry.get("protected", False)
+            if type(protected) is not bool:
+                raise ValueError("protected must be true or false.")
+            items.append({"entity": entity, "label": _name(entry.get("label"), "label", LIMITS["label"]),
+                          "protected": protected})
         out.append({"name": _name(room.get("name"), "room name", LIMITS["name"]), "entities": items})
     return {"stale_after_s": stale, "rooms": out}
 
@@ -121,6 +128,12 @@ def normalize(raw, label):
     return item
 
 
+def controllable(item):
+    """The single gate every X4 control must pass. Protected devices are never switched."""
+    return (item.get("protected") is False and item.get("available") is True
+            and item.get("domain") in CONTROLLABLE_DOMAINS)
+
+
 def collect(config, fetch, now):
     """fetch(entity) -> HA state dict. Raises HouseError only when nothing could be read."""
     rooms, read = [], 0
@@ -131,13 +144,13 @@ def collect(config, fetch, now):
                 raw = fetch(entry["entity"])
                 if not isinstance(raw, dict) or raw.get("entity_id") != entry["entity"]:
                     raise HouseError("unexpected response")
-                items.append(normalize(raw, entry["label"]))
+                items.append(dict(normalize(raw, entry["label"]), protected=entry["protected"]))
                 read += 1
             except Exception:
                 # No error text, URLs or tokens: just an honest marker.
                 items.append({"label": entry["label"], "entity": entry["entity"], "domain": entry["entity"].split(".")[0],
                               "available": False, "state": "couldn't read", "detail": "", "on": None,
-                              "changed_at": None})
+                              "changed_at": None, "protected": entry["protected"]})
         rooms.append({"name": room["name"], "items": items})
     if not read:
         raise HouseError("Home Assistant unreachable")
