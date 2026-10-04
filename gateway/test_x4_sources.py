@@ -80,6 +80,27 @@ class Sources(unittest.TestCase):
         self.assertFalse(s['calendar']['available'])
         self.assertNotIn('OLD SOURCE TITLE',json.dumps(s))
 
+    def test_failed_projection_preserves_hidden_event_uncertainty(self):
+        c=json.loads(json.dumps(CONFIG));c['sources'][1]['fields']=['summary']
+        previous=self.call({'weather':{'state':'sunny'},'calendar':[{'summary':'REVOKED'}]},c)
+        c['sources'][1]['fields']=['start']
+        with patch.dict(os.environ, {'TEST_HA':'private-token'}):
+            result=x4_sources.collect(c,now=NOW+60,previous=previous,
+                http_get=lambda *a: (_ for _ in ()).throw(RuntimeError('offline')))
+        self.assertEqual(result['calendar']['events'], [])
+        self.assertEqual(result['calendar']['hidden_event_count'], 1)
+        self.assertNotIn('REVOKED',json.dumps(result))
+
+    def test_failed_cache_missing_title_origin_does_not_assume_summary(self):
+        previous=self.call({'weather':{'state':'sunny'},'calendar':[{'summary':'UNPROVEN',
+            'start':'2026-10-04'}]})
+        previous['calendar']['events'][0].pop('_title_field')
+        with patch.dict(os.environ, {'TEST_HA':'private-token'}):
+            result=x4_sources.collect(CONFIG,now=NOW+60,previous=previous,
+                http_get=lambda *a: (_ for _ in ()).throw(RuntimeError('offline')))
+        self.assertNotIn('UNPROVEN', json.dumps(result))
+        self.assertEqual(result['calendar']['events'][0]['start'], '2026-10-04')
+
     def test_valid_empty_calendar_is_not_unavailable(self):
         s=self.call({'weather':{'state':'unknown'},'calendar':[]})
         self.assertFalse(s['weather']['available'])

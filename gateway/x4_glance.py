@@ -111,7 +111,7 @@ class Glance:
         if not context:
             return '[x4 glance] Cassie pressed Confirm; displayed context unavailable. Do not infer displayed items from current sources.'
         if 'calendar' in context:
-            from x4_sources import project_events
+            from x4_calendar import project_events
             current=self.snapshot().get('calendar',{})
             saved=context['calendar']
             if not current.get('available') or current.get('source_key')!=saved.get('source_key'):

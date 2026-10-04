@@ -16,15 +16,16 @@ from PIL import Image, ImageDraw
 from x4_dashboard import _age, _font, _state, _text
 from x4_house_view import HouseViews
 from x4_inbox_view import InboxViews
+from x4_life import LifeMenuMixin
 
 DESTINATIONS = ("home", "work", "agents", "house", "life", "reports", "inbox", "status")
 TITLES = {"home": "Home", "work": "Work", "agents": "Agents", "house": "House", "life": "Life",
           "reports": "Reports", "inbox": "Inbox", "status": "Status"}
 BLURBS = {"home": "Clock, weather, agenda", "work": "PRs, issues, CI",
           "agents": "Decisions and agent reports", "house": "Home Assistant",
-          "life": "Routines and reminders", "reports": "Everything to read",
+          "life": "Now, day and opt-in notes", "reports": "Everything to read",
           "inbox": "Approved message threads", "status": "Device and sources"}
-PLANNED = {"life": "Consented routines, reminders and transitions. Rest stays a valid plan."}
+PLANNED = {}
 ROWS = 6          # list rows per screen
 BODY = (24, 128, 776, 404)
 LINE = 26         # body line pitch at 19 px
@@ -115,7 +116,7 @@ def paginate(record, width=BODY[2] - BODY[0], height=BODY[3] - BODY[1]):
     return pages
 
 
-class Menu(HouseViews, InboxViews):
+class Menu(HouseViews, InboxViews, LifeMenuMixin):
     def __init__(self, glance, records, work=None, house_controls=None, inbox=None):
         self.glance, self.records, self.store = glance, records, glance.store
         self.work = work
@@ -130,7 +131,8 @@ class Menu(HouseViews, InboxViews):
             row = db.execute("SELECT body FROM menu_state WHERE device=?", (device,)).fetchone()
         base = {"view": "glance", "selected": "home", "agent": None, "record": None, "revision": None,
                 "page": 0, "pages": 1, "cursor": 0, "choice": None, "notice": None,
-                "work_id": None, "work_revision": None}
+                "work_id": None, "work_revision": None,
+                "life_part": "now", "life_record": None, "life_revision": None}
         return dict(base, **json.loads(row["body"])) if row else base
 
     def _save(self, device, state):
@@ -152,12 +154,20 @@ class Menu(HouseViews, InboxViews):
     # ---- frames -------------------------------------------------------------------------
     def frame(self, device, now, tz, session_s):
         state = self.state(device)
+        if state['view'] == 'soon.life':
+            state = dict(state, view='life', life_part='now', page=0, cursor=0)
+            self._save(device, state)
         # One Work observation covers settling and rendering: a timer collector
         # can atomically replace the source file while a frame is being drawn.
         work_snapshot = self._work() if state["view"] in ("work", "work_detail") else None
         inbox_snapshot = self._inbox(now) if state["view"] in ("inbox", "inbox_detail") else None
         if inbox_snapshot is not None:
             state = self._settle_inbox(device, state, inbox_snapshot)
+        life_snapshot, life_items = None, []
+        if state["view"] in ("life", "life_note"):
+            from x4_life import notes
+            life_snapshot, life_items = self.glance.snapshot(), notes(self.records, now)
+            state = self._life_settle(device, state, life_items)
         state = self._settle(device, state, now, work_snapshot)
         if state["view"] == "glance":
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
@@ -176,7 +186,7 @@ class Menu(HouseViews, InboxViews):
                     state = self._settle_inbox(device, state, inbox_snapshot)
                     image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
         else:
-            image, card, extra = self._render(device, state, now, tz, work_snapshot)
+            image, card, extra = self._render(device, state, now, tz, work_snapshot, life_snapshot, life_items)
         pbm = to_pbm(image)
         tag = '"' + etag(pbm + extra.get('frame_identity', '').encode()) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
@@ -243,6 +253,12 @@ class Menu(HouseViews, InboxViews):
                 or state["view"] in ("inbox", "inbox_detail")):
             if shown is None or shown.get("view") != state["view"]:
                 return result
+        # Delayed Life presses cannot become briefings after timer/home navigation.
+        if state["view"] not in ("life", "life_note") and (ev.get("card") or "").startswith("life."):
+            return result
+        if state["view"] in ("life", "life_note"):
+            return self._life_handle(device, dict(state, notice=None), button, press,
+                                     self._shown(device, ev), now, tz, result)
         if state["view"] == "glance":
             if button == "back" and press == "short" and self.glance.state(device)["page"] == "home":
                 self._save(device, dict(state, view="menu", selected="home", notice=None))
@@ -272,11 +288,14 @@ class Menu(HouseViews, InboxViews):
             return dict(result, moved=True)
         elif button == "confirm" and press == "short":
             target = state["selected"]
+            if (target == 'life' or (shown or {}).get('selected') == 'life') and (
+                    not shown or shown.get('view') != 'menu' or shown.get('selected') != target):
+                return result
             if target == "home":
                 self.go_home(device)
                 return dict(result, moved=True)
-            state.update(view=target if target in ("agents", "reports", "status", "house", "work", "inbox") else "soon." + target,
-                         cursor=0, agent=None, record=None)
+            state.update(view=target if target in ("agents", "reports", "status", "house", "work", "life", "inbox") else "soon." + target,
+                         cursor=0, agent=None, record=None, page=0, life_part="now", life_record=None)
         else:
             return result
         self._save(device, state)
@@ -510,7 +529,7 @@ class Menu(HouseViews, InboxViews):
         if len(rows) > ROWS:
             _text(image, f"{start + 1}–{min(start + ROWS, len(rows))} of {len(rows)}", (600, 396, 776, 414), 13)
 
-    def _render(self, device, state, now, tz, work_snapshot=None):
+    def _render(self, device, state, now, tz, work_snapshot=None, life_snapshot=None, life_items=()):
         view = state["view"]
         if view == "menu":
             image = self._canvas("Destinations", "Alicenet · X4", tz, now)
@@ -531,7 +550,7 @@ class Menu(HouseViews, InboxViews):
                 _text(image, ("▶ " if mark else "   ") + left, (34, y + 6, 330, y + 29), 19, mark)
                 _text(image, right, (340, y + 8, 766, y + 28), 16, mark)
             self._footer(image, "▲ ▼ choose · Confirm: open · Back: home")
-            return image, "menu", {}
+            return image, "menu", {"selected": state["selected"]}
         if view == "agents":
             image = self._canvas("Agents", "Destinations › Agents", tz, now)
             agents = self.records.agents(now)
@@ -565,6 +584,9 @@ class Menu(HouseViews, InboxViews):
             return image, view if view == "reports" else f"agent.{state['agent']}"[:48], extra
         if view in ("record", "choice"):
             return self._render_record(state, now, tz)
+        if view in ("life", "life_note"):
+            from x4_life import render_life
+            return render_life(self, state, life_snapshot, life_items, now, tz)
         if view in ("work", "work_detail"):
             from x4_work_view import render_work
             return render_work(state, work_snapshot, now, tz, self)
