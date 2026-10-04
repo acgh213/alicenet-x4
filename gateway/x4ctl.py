@@ -5,6 +5,11 @@ Same verbs as clockctl (slide, slides, slide-get, slide-remove, status, capabili
 request, preview) plus `events` and per-card `--action BUTTON=LABEL`. Output is one JSON
 object on stdout (exit 0) or {"ok": false, "error": ...} on stderr (exit 1).
 
+Agent records (Cassie opens them from Agents/Reports; they never take over the panel):
+  decide / report   publish from flags or --markdown FILE|- ('# Title', summary, '## Sections')
+  records, record-get, record-remove
+  wait ID           block until answered/read: exit 0; timeout, expired or revised: exit 2
+
 Body text: pass TEXT (a literal "\\n" becomes a line break), --stdin, or repeated --line
 (taken literally, never escape-decoded). Publishing is honest about latency:
 "delivery": "next_wake" means stored now, shown when the X4 next wakes.
@@ -24,9 +29,11 @@ from pathlib import Path
 from PIL import Image
 
 import x4_protocol
+import x4_records
 import x4_render
 
 MAX_STDIN = 8192
+MAX_MARKDOWN = 32768
 MAX_AVATAR_BYTES = 1024 * 1024
 
 
@@ -110,6 +117,26 @@ def _parser():
     s.add_argument("text", nargs="?")
     for name in ('home','weather','agenda','refresh','glance'):
         sub.add_parser(name, help='Control the built-in glance dashboard.').add_argument('--device',default='x4-01')
+    for kind in ("decide", "report"):
+        r = sub.add_parser(kind, help=f"Publish a {'decision' if kind == 'decide' else 'report'} record.")
+        r.add_argument("--id", required=True)
+        r.add_argument("--agent", required=True)
+        r.add_argument("--title")
+        r.add_argument("--summary")
+        r.add_argument("--section", action="append", metavar="HEADING=BODY", help="Repeatable; after markdown ones.")
+        r.add_argument("--markdown", metavar="FILE", help="'# Title', summary paragraph, '## Heading' sections; - = stdin.")
+        r.add_argument("--expires-at")
+        if kind == "decide":
+            r.add_argument("--option", action="append", help="2-4 lowercase words. Default approve/reject/defer.")
+            r.add_argument("--recommend")
+    sub.add_parser("records").add_argument("--agent")
+    sub.add_parser("record-get").add_argument("id")
+    sub.add_parser("record-remove").add_argument("id")
+    w = sub.add_parser("wait", help="Block until Cassie answers or reads a record.")
+    w.add_argument("id")
+    w.add_argument("--revision", type=int, help="Stop with outcome=revised if the record moves past this.")
+    w.add_argument("--timeout", type=float, default=600)
+    w.add_argument("--interval", type=float, default=15)
     sub.add_parser("slides")
     sub.add_parser("slide-get").add_argument("id")
     sub.add_parser("slide-remove").add_argument("id")
@@ -139,7 +166,70 @@ def _slide_request(args):
     return request
 
 
+def _markdown(source):
+    if source == "-":
+        text = sys.stdin.read(MAX_MARKDOWN + 1)
+    else:
+        path = Path(source)
+        if not path.is_file() or path.stat().st_size > MAX_MARKDOWN:
+            raise CLIError(f"markdown {source!r} is not a readable file under {MAX_MARKDOWN} bytes.")
+        text = path.read_text(encoding="utf-8")
+    if len(text.encode("utf-8")) > MAX_MARKDOWN:
+        raise CLIError(f"markdown exceeds {MAX_MARKDOWN} bytes.")
+    return x4_records.from_markdown(text)
+
+
+def _record_request(args):
+    md = _markdown(args.markdown) if args.markdown else {"title": "", "summary": "", "sections": []}
+    title = args.title or md["title"]
+    summary = args.summary if args.summary is not None else md["summary"]
+    if not title:
+        raise CLIError("a record needs a title: --title, or a '# Title' line in --markdown.")
+    if not summary:
+        raise CLIError("a record needs a summary: --summary, or a paragraph before the first '## ' section.")
+    sections = list(md["sections"])
+    for pair in args.section or []:
+        heading, sep, body = pair.partition("=")
+        if not sep:
+            raise CLIError(f"--section expects HEADING=BODY, got {pair!r}.")
+        sections.append({"heading": heading, "body": body})
+    record = {"id": args.id, "kind": "decision" if args.cmd == "decide" else "report", "agent": args.agent,
+              "title": title, "summary": summary, "sections": sections, "expires_at": args.expires_at}
+    if args.cmd == "decide":
+        if args.option:
+            record["options"] = args.option
+        if args.recommend:
+            record["recommendation"] = args.recommend
+    return {"action": "record_put", "record": record}
+
+
+def wait(cfg, args):
+    """Poll one record. Returns (exit code, JSON object)."""
+    deadline = time.monotonic() + args.timeout
+    while True:
+        got = send(cfg, {"action": "record_get", "id": args.id})["result"]
+        if got is None:
+            raise CLIError(f"no record {args.id!r}: removed, or never published.")
+        out = {"ok": True, "id": args.id, "revision": got["revision"], "status": got["status"],
+               "answer": got["answer"]}
+        if args.revision is not None and got["revision"] != args.revision:
+            return 2, dict(out, ok=False, outcome="revised")
+        if got["status"] in ("answered", "read"):
+            return 0, dict(out, outcome=got["status"])
+        if x4_records._expired(got["record"], time.time()):
+            return 2, dict(out, ok=False, outcome="expired")
+        if time.monotonic() >= deadline:
+            return 2, dict(out, ok=False, outcome="timeout")
+        time.sleep(max(0.0, min(args.interval, deadline - time.monotonic())))
+
+
 def _request(args):
+    if args.cmd in ("decide", "report"):
+        return _record_request(args)
+    if args.cmd == "records":
+        return {"action": "records", "agent": args.agent}
+    if args.cmd in ("record-get", "record-remove"):
+        return {"action": args.cmd.replace("-", "_"), "id": args.id}
     if args.cmd in ('home','weather','agenda','refresh','glance'):
         return {'action':'glance','op':'status' if args.cmd=='glance' else args.cmd,'device':args.device}
     if args.cmd == "slide":
@@ -194,6 +284,10 @@ def main(argv=None):
             x4_render.render_slide(req["slide"], updated_at=now, now=now).save(args.output)
             print(json.dumps({"ok": True, "output": args.output}))
             return 0
+        if args.cmd == "wait":
+            code, out = wait(_config(args.config), args)
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return code
         print(json.dumps(send(_config(args.config), _request(args)), indent=2, ensure_ascii=False))
         return 0
     except (ValueError, RuntimeError, OSError) as exc:

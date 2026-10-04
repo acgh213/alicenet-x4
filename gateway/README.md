@@ -66,6 +66,27 @@ Agents publish typed records through `POST /x4/v1/agent` with the agent token:
 The gateway renders long reports into screens itself (summary, then each section,
 wrapped to fit); agents never format for the panel.
 
+### From the command line
+
+`~/.local/bin/x4ctl` wraps `gateway/x4ctl.py` (config `~/.config/x4ctl/config.json`).
+
+```sh
+# A decision with the default Approve/Reject/Defer, then block until Cassie answers.
+x4ctl decide --id vesper.merge-12 --agent vesper --title "Merge PR #12?" \
+  --summary "CI green, docs only." --section "Risk=Low" --recommend approve
+x4ctl wait vesper.merge-12 --revision 1 --timeout 3600
+# exit 0 + {"outcome": "answered", "answer": "approve", ...}
+# exit 2 + outcome timeout | expired | revised   (exit 1 = error, e.g. record removed)
+
+# A report straight from markdown: '# Title', a summary paragraph, '## Sections'.
+x4ctl report --id eido.weekly --agent eido --markdown report.md   # or --markdown - for stdin
+
+x4ctl records [--agent eido] · x4ctl record-get ID · x4ctl record-remove ID
+```
+
+Pass `--revision` to `wait` whenever you might revise the record: if it changes, `wait`
+stops with `revised` instead of handing you an answer to a question you no longer asked.
+
 The clock is explicitly **sampled, not live**. Source observation age and retrieval
 age are distinct. Cached refresh failures, stale data, unavailable sources and an
 available calendar with zero events are separate states. No guessed forecasts.

@@ -68,6 +68,26 @@ def validate_record(body):
     return out
 
 
+def from_markdown(text):
+    """'# Title', a summary paragraph, then '## Heading' sections -> partial record fields.
+
+    Missing pieces come back empty; the caller decides whether flags fill them. Deeper
+    headings and lists stay as text: the panel shows them literally, which reads fine.
+    """
+    title, summary, sections, current = "", [], [], None
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("## "):
+            current = {"heading": line[3:].strip(), "body": []}
+            sections.append(current)
+        elif line.startswith("# ") and not title and current is None and not "".join(summary).strip():
+            title = line[2:].strip()
+        else:
+            (current["body"] if current is not None else summary).append(line.rstrip())
+    tidy = lambda lines: re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return {"title": title, "summary": tidy(summary),
+            "sections": [{"heading": s["heading"], "body": tidy(s["body"])} for s in sections]}
+
+
 def _expired(record, now):
     exp = record.get("expires_at")
     return exp is not None and now >= dt.datetime.fromisoformat(exp.replace("Z", "+00:00")).timestamp()
