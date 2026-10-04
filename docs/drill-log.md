@@ -49,3 +49,20 @@ inside the SDK's window, so **stock thresholds are fine**.
 **EFuse / Security**: secure boot off, flash encryption off, serial download enabled,
 USB-JTAG enabled, pad JTAG enabled, chip v0.4. "Bootloader writable; serial download still
 available as a recovery path." Matches Eido's espefuse read.
+
+## 2026-10-03: Ambient dashboard navigation
+
+Firmware: `0.3.1-ambient` (`c0a6101`). Dashboard: built-in Home/Weather/Agenda glance surface.
+
+| Control | Result |
+| --- | --- |
+| Left / Right page navigation | **PASS**: Cassie reports both work on the physical X4 |
+| Back → Home | **PASS**: Cassie reports it works on the physical X4 |
+| Home / Weather / Agenda rendering | **PASS**: photographs confirm all three real-source pages |
+| Short Confirm → Muse brief | _pending_ |
+| Long Confirm → local refresh | _pending_ |
+| Ambient sleep preserving the displayed page | _pending_ |
+| Timer wake / Power wake / latch retention | _pending_ |
+
+The navigation path is now physically verified; the remaining release gates are action
+semantics and power behavior, not panel layout or basic input routing.
