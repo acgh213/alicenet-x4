@@ -48,14 +48,17 @@ class App:
         self.generation = 0
         self.forward_lock = threading.Lock()
         self.refresh_lock = threading.Lock()
-        self.glance = self.menu = None
+        self.glance = self.menu = self.work = None
         from x4_records import Records
         self.records = Records(self.store)
         if cfg.get('glance_snapshot'):
             from x4_glance import Glance
             from x4_menu import Menu
             self.glance = Glance(self.store, cfg['glance_snapshot'])
-            self.menu = Menu(self.glance, self.records)
+            if cfg.get('work_snapshot') and cfg.get('work_config'):
+                from x4_work import Work
+                self.work = Work(cfg['work_snapshot'], cfg['work_config'])
+            self.menu = Menu(self.glance, self.records, self.work)
 
     def bump(self):
         with self.changed:
@@ -151,6 +154,27 @@ class App:
         except (OSError,subprocess.TimeoutExpired):
             return False
         finally:
+            self.refresh_lock.release()
+
+    def refresh_work(self):
+        """Run only the configured Work collector, independent of HA/Muse."""
+        cmd = self.cfg.get('work_refresh_cmd')
+        if (self.work is None or not isinstance(cmd, (list, tuple)) or not cmd
+                or any(not isinstance(arg, str) or not arg for arg in cmd)):
+            return False
+        if not self.refresh_lock.acquire(blocking=False):
+            return False
+        before = self.work.snapshot()
+        ok = False
+        try:
+            ok = subprocess.run(list(cmd), timeout=20, capture_output=True).returncode == 0
+            return ok
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        finally:
+            # A nonzero collector exit may still write an honest failure cache.
+            if ok or self.work.snapshot() != before:
+                self.bump()
             self.refresh_lock.release()
 
     def forward_text(self, ev):
@@ -321,7 +345,9 @@ class Handler(BaseHTTPRequestHandler):
                 moved = result['moved'] or moved
                 if result['refresh']:
                     # Keep the HTTP acknowledgement fast; collection may take seconds.
-                    threading.Thread(target=self.app.refresh_sources,daemon=True).start()
+                    refresh = (self.app.refresh_work if result.get('refresh_target') == 'work'
+                               else self.app.refresh_sources)
+                    threading.Thread(target=refresh,daemon=True).start()
                 if result['label'] in ('answer', 'context'):
                     self.app.store.assign_forward(device, batch['boot'], ev['seq'], result['label'], result['context'])
                 forward = forward or bool(result['label'])
