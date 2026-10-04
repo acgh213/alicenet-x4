@@ -14,6 +14,7 @@ import time
 from PIL import Image, ImageDraw
 
 from x4_dashboard import _age, _font, _state, _text
+from x4_house_view import HouseViews
 
 DESTINATIONS = ("home", "work", "agents", "house", "life", "reports", "inbox", "status")
 TITLES = {"home": "Home", "work": "Work", "agents": "Agents", "house": "House", "life": "Life",
@@ -114,10 +115,11 @@ def paginate(record, width=BODY[2] - BODY[0], height=BODY[3] - BODY[1]):
     return pages
 
 
-class Menu:
-    def __init__(self, glance, records, work=None):
+class Menu(HouseViews):
+    def __init__(self, glance, records, work=None, house_controls=None):
         self.glance, self.records, self.store = glance, records, glance.store
         self.work = work
+        self.house_controls = house_controls
         with self.store.lock, self.store._db() as db:
             db.execute(SCHEMA)
 
@@ -132,7 +134,9 @@ class Menu:
 
     def _save(self, device, state):
         with self.store.lock, self.store._db() as db:
-            db.execute("INSERT INTO menu_state VALUES (?,?) ON CONFLICT(device) DO UPDATE SET body=excluded.body",
+            db.execute("INSERT INTO menu_state VALUES (?,json_set(?, '$._navigation_revision', 1)) "
+                       "ON CONFLICT(device) DO UPDATE SET body=json_set(excluded.body, "
+                       "'$._navigation_revision', COALESCE(json_extract(menu_state.body, '$._navigation_revision'), 0)+1)",
                        (device, json.dumps(state)))
 
     def wake(self, device, wake):
@@ -156,7 +160,7 @@ class Menu:
         from x4_render import etag, to_pbm
         image, card, extra = self._render(device, state, now, tz, work_snapshot)
         pbm = to_pbm(image)
-        tag = '"' + etag(pbm) + '"'
+        tag = '"' + etag(pbm + extra.get('frame_identity', '').encode()) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
                    "choice": state["choice"], "card": card, **extra}
         with self.store.lock, self.store._db() as db:
@@ -176,6 +180,7 @@ class Menu:
 
     def _settle(self, device, state, now, work_snapshot=None):
         """A record or room that vanished drops Cassie back to its list, not an error."""
+        state = self._reconcile_house_receipt(device, state)
         if state["view"] == "work_detail":
             from x4_work_view import work_items, revision
             item = next((i for i in work_items(work_snapshot) if i["id"] == state["work_id"]), None)
@@ -207,11 +212,11 @@ class Menu:
         return json.loads(row["body"]) if row else None
 
     # ---- buttons ------------------------------------------------------------------------
-    def handle(self, device, ev, now, tz):
+    def handle(self, device, ev, now, tz, defer_house=False):
         """Apply one new (deduplicated) event. Returns what x4d must do next."""
         state = self.state(device)
         button, press = ev["button"], ev["press"]
-        result = {"moved": False, "label": None, "refresh": False}
+        result = {"moved": False, "label": None, "refresh": False, "defer_house": defer_house}
         if state["view"] == "glance":
             if button == "back" and press == "short" and self.glance.state(device)["page"] == "home":
                 self._save(device, dict(state, view="menu", selected="home", notice=None))
@@ -379,13 +384,15 @@ class Menu:
         elif button == "confirm" and rooms and shown is not None:
             names = [r["name"] for r in rooms]
             wanted = shown.get("highlighted")
-            state.update(view="room", room=wanted if wanted in names else names[min(state["cursor"], len(names) - 1)])
+            state.update(view="room", room=wanted if wanted in names else names[min(state["cursor"], len(names) - 1)], cursor=0)
         else:
             return result
         self._save(device, state)
         return dict(result, moved=True)
 
     def _on_room(self, device, state, button, press, shown, now, result):
+        if self.house_controls:
+            return super()._on_room(device, state, button, press, shown, now, result)
         if button == "confirm" and press == "long":
             return dict(result, refresh=True)
         if button == "back":
@@ -537,6 +544,8 @@ class Menu:
             return render_work(state, work_snapshot, now, tz, self)
         if view == "status":
             return self._render_status(device, state, now, tz), "status", {}
+        if view in ("house_preview", "house_receipt"):
+            return self._render_house_action(state, now, tz)
         if view in ("house", "room"):
             return self._render_house(state, now, tz)
         name = view.split(".", 1)[1]
@@ -550,6 +559,8 @@ class Menu:
     def _render_house(self, state, now, tz):
         house = self._house()
         if state["view"] == "room":
+            if self.house_controls:
+                return self._render_control_room(state, now, tz, house)
             room = next(r for r in self._rooms() if r["name"] == state["room"])
             image = self._canvas(room["name"], "House › " + room["name"], tz, now)
             pitch = min(50, 286 // max(1, len(room["items"])))  # 8 rows fit; fewer rows breathe

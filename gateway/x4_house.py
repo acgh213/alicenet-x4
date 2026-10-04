@@ -1,19 +1,21 @@
-"""House: allowlisted Home Assistant entities, read-only, normalized for the X4 panel.
+"""House: allowlisted Home Assistant entities, normalized for the X4 panel.
 
 The allowlist lives in ~/.config/x4d/house.json (rooms are Cassie's names, not HA
 areas, which are often wrong). Rules the panel depends on:
 
 - unavailable, unknown and unreadable are never shown as off, closed or zero;
 - people, trackers and media titles never enter this data path;
-- there is no action field yet: the first control will be added deliberately;
+- mutations use explicit on/off previews via the narrow credentialed helper;
 - `"protected": true` marks a device that must NEVER be switched from the X4 (Cassie's
   washer smart plug). Any control path must go through controllable(), which refuses it.
 """
 import datetime as dt
+import hashlib
+import json
 import math
 import re
 
-CONTROLLABLE_DOMAINS = ("light",)  # the first control is a light toggle; widen deliberately
+CONTROLLABLE_DOMAINS = ("light",)  # explicit single-light turn_on / turn_off only
 DOMAINS = ("light", "switch", "climate", "sensor", "binary_sensor", "media_player", "fan", "cover", "lock")
 LIMITS = {"rooms": 8, "entities": 8, "name": 24, "label": 24}
 _ENTITY = re.compile(r"^[a-z_]+\.[a-z0-9_]{1,80}$")
@@ -90,6 +92,12 @@ def _num(value):
     return str(int(number)) if number == int(number) else str(number)
 
 
+def state_key(raw):
+    """Opaque revision: includes light attributes and HA timestamps, never exposes them."""
+    fields = {k: raw.get(k) for k in ('entity_id', 'state', 'attributes', 'last_changed', 'last_updated')}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
 def normalize(raw, label):
     entity = raw["entity_id"]
     domain = entity.split(".")[0]
@@ -100,6 +108,7 @@ def normalize(raw, label):
     if value in ("unavailable", "unknown", ""):
         return dict(item, available=False, state=value or "unknown")
     if domain == "light":
+        item['state_key'] = state_key(raw)
         item["on"] = value == "on"
         if value == "on" and isinstance(attrs.get("brightness"), (int, float)):
             item["detail"] = f"{round(attrs['brightness'] / 255 * 100)}%"
