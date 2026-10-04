@@ -14,6 +14,7 @@ import time
 from PIL import Image, ImageDraw
 
 from x4_dashboard import _age, _font, _state, _text
+from x4_inbox_view import InboxViews
 
 DESTINATIONS = ("home", "work", "agents", "house", "life", "reports", "inbox", "status")
 TITLES = {"home": "Home", "work": "Work", "agents": "Agents", "house": "House", "life": "Life",
@@ -22,8 +23,7 @@ BLURBS = {"home": "Clock, weather, agenda", "work": "PRs, issues, CI",
           "agents": "Decisions and agent reports", "house": "Home Assistant",
           "life": "Routines and reminders", "reports": "Everything to read",
           "inbox": "Approved message threads", "status": "Device and sources"}
-PLANNED = {"life": "Consented routines, reminders and transitions. Rest stays a valid plan.",
-           "inbox": "Approved Telegram threads only, read-only. Replies need a stronger confirmation."}
+PLANNED = {"life": "Consented routines, reminders and transitions. Rest stays a valid plan."}
 ROWS = 6          # list rows per screen
 BODY = (24, 128, 776, 404)
 LINE = 26         # body line pitch at 19 px
@@ -114,10 +114,11 @@ def paginate(record, width=BODY[2] - BODY[0], height=BODY[3] - BODY[1]):
     return pages
 
 
-class Menu:
-    def __init__(self, glance, records, work=None):
+class Menu(InboxViews):
+    def __init__(self, glance, records, work=None, inbox=None):
         self.glance, self.records, self.store = glance, records, glance.store
         self.work = work
+        self.inbox = inbox
         with self.store.lock, self.store._db() as db:
             db.execute(SCHEMA)
 
@@ -150,15 +151,34 @@ class Menu:
         # One Work observation covers settling and rendering: a timer collector
         # can atomically replace the source file while a frame is being drawn.
         work_snapshot = self._work() if state["view"] in ("work", "work_detail") else None
+        inbox_snapshot = self._inbox(now) if state["view"] in ("inbox", "inbox_detail") else None
+        if inbox_snapshot is not None:
+            state = self._settle_inbox(device, state, inbox_snapshot)
         state = self._settle(device, state, now, work_snapshot)
         if state["view"] == "glance":
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
         from x4_render import etag, to_pbm
-        image, card, extra = self._render(device, state, now, tz, work_snapshot)
+        if inbox_snapshot is not None:
+            image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+            if self.inbox is not None and self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                # Rendering can be slow. Re-project changed consent before publishing,
+                # never return pixels built from the earlier authorization.
+                inbox_snapshot = self._inbox(now)
+                state = self._settle_inbox(device, state, inbox_snapshot)
+                image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+                if self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                    from x4_inbox_view import empty_snapshot
+                    inbox_snapshot = dict(empty_snapshot(), state="error")
+                    state = self._settle_inbox(device, state, inbox_snapshot)
+                    image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+        else:
+            image, card, extra = self._render(device, state, now, tz, work_snapshot)
         pbm = to_pbm(image)
         tag = '"' + etag(pbm) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
                    "choice": state["choice"], "card": card, **extra}
+        if inbox_snapshot is not None:
+            tag = self._inbox_etag(pbm, context)
         with self.store.lock, self.store._db() as db:
             db.execute("INSERT OR IGNORE INTO glance_frames VALUES (?,?,?,?,?)",
                        (device, tag, card, json.dumps(context, ensure_ascii=False), now))
@@ -212,6 +232,12 @@ class Menu:
         state = self.state(device)
         button, press = ev["button"], ev["press"]
         result = {"moved": False, "label": None, "refresh": False}
+        shown = self._shown(device, ev)
+        if ((shown or {}).get("view") in ("inbox", "inbox_detail")
+                or ev.get("card") == "inbox" or (ev.get("card") or "").startswith("inbox.")
+                or state["view"] in ("inbox", "inbox_detail")):
+            if shown is None or shown.get("view") != state["view"]:
+                return result
         if state["view"] == "glance":
             if button == "back" and press == "short" and self.glance.state(device)["page"] == "home":
                 self._save(device, dict(state, view="menu", selected="home", notice=None))
@@ -244,7 +270,7 @@ class Menu:
             if target == "home":
                 self.go_home(device)
                 return dict(result, moved=True)
-            state.update(view=target if target in ("agents", "reports", "status", "house", "work") else "soon." + target,
+            state.update(view=target if target in ("agents", "reports", "status", "house", "work", "inbox") else "soon." + target,
                          cursor=0, agent=None, record=None)
         else:
             return result
