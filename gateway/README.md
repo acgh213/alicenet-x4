@@ -228,8 +228,10 @@ offline subprocess refresh fixtures. Existing Python 3.11/Pillow gateway checks
 cover the source and rendered/navigation contract. No live host, hardware or
 device activation is needed to run them.
 
-Firmware build/install instructions and pending battery sleep gates:
-[`../firmware/README.md`](../firmware/README.md). Preserve CrossInk in ota_0;
+Firmware build/install instructions and remaining power/timing characterization:
+[`../firmware/README.md`](../firmware/README.md). The ambient functional drill passed;
+Work host deployment and pending physical checks are recorded in
+[`../docs/work-rollout.md`](../docs/work-rollout.md). Preserve CrossInk in ota_0;
 install the application image via **CrossInk Settings → SD Firmware Update** only.
 
 ## Legacy agent cards

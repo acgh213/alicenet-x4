@@ -16,6 +16,17 @@ The first physical vertical slice is working on real hardware. The X4 currently 
 - ambient sleep with panel retention, timer wake, and Power wake;
 - a Debian `x4d` gateway, Alicenet `clockctl x4` routing, and a ten-minute source timer.
 
+The [ambient drill log](docs/drill-log.md#2026-10-03-ambient-dashboard-navigation)
+records functional acceptance on `0.3.1-ambient`, including navigation, real-source
+rendering, short/long Confirm and sleep/wake. Battery sleep-current measurement
+and repeated-cycle endurance remain optional, unmeasured characterization.
+
+The gateway now also serves read-only Work PR/build browsing for the single
+allowlisted public repository `acgh213/alicenet-x4`, with its own ten-minute
+collector. The merged Work revision is host-deployed and its authenticated frame
+and source readbacks are verified; physical Work button/panel acceptance is still
+pending. This gateway update requires no firmware flash.
+
 See [docs/ambient-release.md](docs/ambient-release.md) for the verified release artifact
 and physical gates, and [docs/future-surface.md](docs/future-surface.md) for the next
 expansion: agent control/information → Home Assistant → life automation → pullable

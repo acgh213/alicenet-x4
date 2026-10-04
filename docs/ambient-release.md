@@ -47,22 +47,24 @@ Never use serial PlatformIO upload or CrossInk online OTA in this dual-boot layo
 - Actual source previews generated privately and Home inspected for layout.
 - `git diff --check` clean. Only intentionally untracked SDK checkout remains.
 
-## Physical acceptance still pending
+## Physical acceptance and remaining characterization
 
-The last read-back device version before handoff was `0.2.4-net`; this document
-DOES NOT claim the ambient image has been installed or run on the X4 yet.
+The [2026-10-03 ambient drill](drill-log.md#2026-10-03-ambient-dashboard-navigation)
+records `0.3.1-ambient` on the physical X4. Cassie verified Left/Right navigation,
+Back → Home, short Confirm → Muse, long Confirm → local refresh, ambient panel
+retention, and the timer/Power wake/latch loop. Photographs confirmed real-source
+Home, Weather and Agenda rendering. These supersede the original pre-install
+handoff's `0.2.4-net` readback and pending-install language.
 
-After installation:
-1. Verify Home renders and Left/Right show Weather/Agenda; Back returns Home.
-2. Short Confirm should show its receipt and send a page-specific Muse brief.
-   Long Confirm should trigger local source refresh without a duplicate brief.
-3. Leave it idle for about two minutes: image should remain, not an off screen.
-4. On battery without USB, observe a ten-minute timer wake and Power wake without
-   immediate off. Deliberate new Power hold should still manually switch off.
+This is functional hardware acceptance, not a battery-current measurement or a
+calibrated test of the 700 ms boundary. Battery sleep current, repeated-cycle
+endurance, exact timing under display/network delays, and interrupted-download
+fault characterization remain unmeasured. Recovery was established in earlier
+drills. See [firmware/README.md](../firmware/README.md) for the remaining targeted
+checks; host tests do not establish those measurements.
 
-Battery sleep current, real timer wake/latch retention, physical 700ms timing and
-panel fidelity remain unmeasured. Recovery was established in earlier drills;
-this release's changed physical behavior still needs observation, not inference.
+The gateway-only Work rollout requires no new firmware installation. Its service
+frame readback is not physical Work button/panel acceptance.
 
 ## Relevant commits
 
