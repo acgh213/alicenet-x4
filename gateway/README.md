@@ -39,6 +39,10 @@ Device behaviour:
 - Fresh Power hold: manual off. Power wake is ignored until released so it cannot
   immediately switch the device off again.
 
+The clock is explicitly **sampled, not live**. Source observation age and retrieval
+age are distinct. Cached refresh failures, stale data, unavailable sources and an
+available calendar with zero events are separate states. No guessed forecasts.
+
 ## Agent records
 
 Agents publish typed records through `POST /x4/v1/agent` with the agent token:
@@ -86,10 +90,6 @@ x4ctl records [--agent eido] · x4ctl record-get ID · x4ctl record-remove ID
 
 Pass `--revision` to `wait` whenever you might revise the record: if it changes, `wait`
 stops with `revised` instead of handing you an answer to a question you no longer asked.
-
-The clock is explicitly **sampled, not live**. Source observation age and retrieval
-age are distinct. Cached refresh failures, stale data, unavailable sources and an
-available calendar with zero events are separate states. No guessed forecasts.
 
 ## Use through clockctl
 
