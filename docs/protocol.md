@@ -48,7 +48,10 @@ Responses:
     Identical pixels with changed action context must return a new frame, not 304.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
-  - `X-Card: weather.today`: the current card id, echoed back with events
+  - `X-Card: weather.today`: the current card id, echoed back with events. Life uses
+    `life.<semantic fingerprint>` so identical pixels cannot rebind a different
+    note ID/content/revision or calendar context. A 304 still supplies the current
+    card; the displayed PBM's ETag remains content-addressed.
   - `X-Card-Actions: confirm,confirm_long,down`: buttons this card assigned (subset of
     `confirm, confirm_long, back, up, down`; Left/Right always page the deck)
   - `X-Next-Poll: 900`: seconds; the device clamps it to [300, 21600]

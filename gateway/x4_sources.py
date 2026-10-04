@@ -21,6 +21,7 @@ CLOCK_ROOT = Path('/home/cassie/services/clock-control')
 sys.path.insert(0, str(CLOCK_ROOT))
 import clock_feeds as feeds
 import x4_house
+from x4_calendar import project_events
 
 
 def epoch(value):
@@ -69,29 +70,6 @@ def source_key(config, source, key):
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
-def project_events(events, fields, *, retained=False, previous_fields=()):
-    approved=[]
-    for e in events[:256]:
-        if not isinstance(e,dict): continue
-        row={}
-        if retained:
-            title_field=e.get('_title_field','summary')
-            if title_field in fields and title_field in previous_fields and e.get('summary'):
-                row.update(summary=text(e['summary']),_title_field=title_field)
-        else:
-            for field in fields:
-                if field in ('summary','text','displayable_text','name','activity','health') and e.get(field):
-                    row.update(summary=text(e[field]),_title_field=field)
-                    break
-        if any(f in fields for f in ('start','at')):
-            for k in ('start','end'):
-                value=e.get(k) if k=='end' or retained else e.get('start',e.get('at'))
-                if isinstance(value,dict): value=value.get('dateTime',value.get('date'))
-                if isinstance(value,str) and len(value)<=40: row[k]=value
-        if row.get('summary') or row.get('start'): approved.append(row)
-    return approved
-
-
 def _calendar(config, source, http_get, now):
     end = now + source.get('lookahead_s', source['stale_after_s'])
     window = {'start':feeds._utc_iso(now), 'end':feeds._utc_iso(end)}
@@ -103,7 +81,8 @@ def _calendar(config, source, http_get, now):
     approved = project_events(events,source['fields'])
     return {'available':True, 'observed_at':now, 'checked_at':now,
             'stale_after_s':source['stale_after_s'], 'window_start':window['start'],
-            'window_end':window['end'], 'events':approved, 'approved_fields':source['fields']}
+            'window_end':window['end'], 'events':approved, 'approved_fields':source['fields'],
+            'hidden_event_count': max(0, len(events) - len(approved))}
 
 
 def _house(config, house, http_get, now, previous):
@@ -149,6 +128,7 @@ def collect(config, *, now=None, previous=None, http_get=None, house=None):
                 if key=='calendar':
                     result[key]['events']=project_events(old.get('events',[]),source['fields'],
                         retained=True,previous_fields=old.get('approved_fields',[]))
+                    result[key]['hidden_event_count']=old.get('hidden_event_count',0) + len(old.get('events',[])) - len(result[key]['events'])
                     result[key]['approved_fields']=source['fields']
             result[key]['refresh_failed'] = True
     if house is not None:

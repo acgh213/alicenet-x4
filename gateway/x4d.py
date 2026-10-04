@@ -386,9 +386,12 @@ class Handler(BaseHTTPRequestHandler):
         if batch["device"] != device:
             return self._json(403, {"ok": False, "error": "device does not match token"})
         now = time.time()
+        # Menu interpretation happens before forwarding assignment, including batched
+        # navigation into Life. A foreign card must not bypass the local read-only view.
+        contexts = self.app.glance.event_context(batch) if self.app.glance else None
         new = self.app.store.record_events(batch, now=now,
                   action_labels=self.app.glance.action_labels() if self.app.glance else None,
-                  contexts=self.app.glance.event_context(batch) if self.app.glance else None,
+                  contexts=contexts, local_only=bool(self.app.menu),
                   allow_slide_actions=self.app.menu is None)
         moved = forward = False
         for ev in new:
@@ -405,8 +408,9 @@ class Handler(BaseHTTPRequestHandler):
                     refresh = (self.app.refresh_work if result.get('refresh_target') == 'work'
                                else self.app.refresh_sources)
                     threading.Thread(target=refresh,daemon=True).start()
-                if result['label'] in ('answer', 'context'):
-                    self.app.store.assign_forward(device, batch['boot'], ev['seq'], result['label'], result['context'])
+                if result['label'] in ('answer', 'context', 'brief'):
+                    context = (contexts or {}).get(ev['seq'], '{}') if result['label'] == 'brief' else result['context']
+                    self.app.store.assign_forward(device, batch['boot'], ev['seq'], result['label'], context)
                 forward = forward or bool(result['label'])
             elif ev["button"] in NAVIGATION and ev["press"] == "short":
                 self.app.store.navigate(NAVIGATION[ev["button"]], now=now)
