@@ -164,10 +164,20 @@ class Dashboard(unittest.TestCase):
     def test_controls_describe_brief_hold_refresh_back_and_agenda_scroll(self):
         for page in ("home", "weather", "agenda"):
             text = self.texts(self.render(page=page))
-            for expected in ("Confirm: brief", "hold: refresh", "Back: home"):
+            back = "Back: menu" if page == "home" else "Back: home"
+            for expected in ("Confirm: brief", "hold: refresh", back):
                 self.assertIn(expected, text)
             if page == "agenda":
                 self.assertIn("▲ ▼ scroll 5", text)
+
+    def test_attention_badge_is_quiet_and_inside_the_header(self):
+        plain = self.render()
+        badged = self.renderer.render_snapshot(fixture(), now=NOW, tz=TZ, badge="1 decision · 2 unread")
+        self.assertNotIn("decision", self.texts(plain))
+        self.assertIn("1 decision · 2 unread", self.texts(badged))
+        self.assert_layout(badged)
+        badge = [item for item in badged.info["layout"] if "decision" in item["text"]][0]
+        self.assertLess(badge["ink"][3], 45)  # header row only; never displaces the dashboard
 
     def test_agenda_offset_scrolls_five_items_and_home_ignores_it(self):
         snapshot = fixture()

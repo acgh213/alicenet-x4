@@ -61,7 +61,7 @@ class Glance:
     def action_labels(self):
         return {'glance.'+p:{'confirm':'brief'} for p in PAGES}
 
-    def frame(self, device, now, tz, session_s):
+    def frame(self, device, now, tz, session_s, badge=None):
         from x4_dashboard import render_snapshot
         from x4_render import to_pbm,etag
         state=self.state(device)
@@ -69,7 +69,7 @@ class Glance:
         snapshot=self.snapshot()
         stamp=snapshot.get('observed_at') or now
         sample=dict(snapshot,display_at=stamp)
-        img=render_snapshot(sample,page=state['page'],now=now,tz=tz,offset=state['offset'])
+        img=render_snapshot(sample,page=state['page'],now=now,tz=tz,offset=state['offset'],badge=badge)
         pbm=to_pbm(img)
         tag='"'+etag(pbm)+'"'
         card='glance.'+state['page']
@@ -79,7 +79,7 @@ class Glance:
                 (device,tag,card,json.dumps(context,ensure_ascii=False),now))
             db.execute('DELETE FROM glance_frames WHERE device=? AND rowid NOT IN '
                 '(SELECT rowid FROM glance_frames WHERE device=? ORDER BY created_at DESC LIMIT 32)',(device,device))
-        return {'pbm':pbm,'etag':tag,'card':card,'actions':ACTIONS,'session':session_s}
+        return {'pbm':pbm,'etag':tag,'card':card,'actions':ACTIONS,'session':session_s,'image':img}
 
     def view_context(self, snapshot, state, now, tz):
         from x4_dashboard import visible_events

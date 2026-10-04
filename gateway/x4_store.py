@@ -178,6 +178,15 @@ class Store:
                     new.append(ev)
         return new
 
+    def assign_forward(self, device, boot, seq, label, context):
+        """Mark an already-recorded local event for Muse once its meaning is known."""
+        with self.lock, self._db() as db:
+            changed = db.execute("UPDATE events SET label=?, forward='pending' WHERE device=? AND boot=? AND seq=? "
+                                 "AND forward='local'", (label, device, boot, seq)).rowcount
+            if changed:
+                db.execute("INSERT OR REPLACE INTO event_context VALUES (?,?,?,?)", (device, boot, seq, context))
+            return bool(changed)
+
     def acked(self, device, boot):
         with self._db() as db:
             row = db.execute("SELECT MAX(seq) FROM events WHERE device=? AND boot=?", (device, boot)).fetchone()

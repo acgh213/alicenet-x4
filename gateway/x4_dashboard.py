@@ -189,8 +189,12 @@ def _agenda(image, source, now, tz, box, count, offset=0):
         _text(image, f"{offset + 1}–{min(offset + count, len(events))} of {len(events)} in fetched window", (x0, y1 - 19, x1, y1), 14)
 
 
-def render_snapshot(snapshot, page="home", now=None, tz=None, *, offset=0):
-    """Render supplied data only. Caller supplies sample epoch; default is system time."""
+def render_snapshot(snapshot, page="home", now=None, tz=None, *, offset=0, badge=None):
+    """Render supplied data only. Caller supplies sample epoch; default is system time.
+
+    `badge` is a short attention count (open decisions, unread reports). It lives in the
+    header row so agent attention is visible without displacing the dashboard.
+    """
     if page not in PAGES:
         raise ValueError(f"Unknown dashboard page: {page}")
     tz = tz or ZoneInfo("America/New_York")
@@ -200,7 +204,9 @@ def render_snapshot(snapshot, page="home", now=None, tz=None, *, offset=0):
     image = Image.new("1", (800, 480), 1)
     image.info["layout"] = []
     draw = ImageDraw.Draw(image)
-    _text(image, ("FIXTURE · " if snapshot.get("fixture") else "") + "AT A GLANCE", (24, 17, 440, 39), 14, True)
+    _text(image, ("FIXTURE · " if snapshot.get("fixture") else "") + "AT A GLANCE", (24, 17, 200, 39), 14, True)
+    if badge:
+        _text(image, "● " + badge, (205, 17, 465, 39), 14, True)
     _text(image, page.upper(), (470, 17, 630, 39), 14, True)
     if page == "home":
         _text(image, stamp.strftime("%I:%M").lstrip("0"), (24, 50, 318, 138), 82, True, shrink=True)
@@ -252,6 +258,7 @@ def render_snapshot(snapshot, page="home", now=None, tz=None, *, offset=0):
     _text(image, f"Checked {checked} ago · snapshot, not live", (24, 440, 490, 458), 13)
     if page == "agenda":
         _text(image, "▲ ▼ scroll 5", (580, 440, 776, 458), 13, True)
-    _text(image, "◀ ▶ pages · Back: home · Confirm: brief · hold: refresh", (24, 461, 620, 479), 13, True)
+    back = "Back: menu" if page == "home" else "Back: home"
+    _text(image, f"◀ ▶ pages · {back} · Confirm: brief · hold: refresh", (24, 461, 620, 479), 13, True)
     _text(image, f"{page.capitalize()} {PAGES.index(page) + 1}/3", (625, 461, 776, 479), 13, True)
     return image

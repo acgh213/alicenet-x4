@@ -7,15 +7,64 @@ private feed config. The X4 never receives HA credentials or calendar descriptio
 
 ## Controls
 
+The full grammar is in [docs/interaction-model.md](../docs/interaction-model.md).
+
+On the glance dashboard (the ambient default):
+
 - Left/Right: Home → Weather → Agenda, wrapping in either direction.
-- Back: Home.
+- Back: from Weather/Agenda returns Home; **from Home opens the destinations menu**.
 - Agenda Up/Down: five-item pages.
 - Short Confirm: ask real Muse on Alicenet for a concise briefing using source context.
 - Long Confirm (700 ms): locally refresh the existing sources; not a Muse message.
+- A quiet header badge (`● 2 decisions · 1 unread`) shows when agents are waiting.
+  Agent records never displace the dashboard.
+
+In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Status):
+
+- Up/Down: move the highlight. Confirm: open. Back: up one level.
+- Agents → an agent → a decision or report → page with Up/Down.
+- On a decision, Confirm opens Approve / Reject / Defer (or the agent's own options);
+  Up/Down chooses, Confirm records the answer, **Back cancels**. The answer applies only
+  to the revision that was on screen; if the agent revised it meanwhile, nothing is
+  recorded and the screen says so.
+- On a report, Confirm marks that revision read.
+- Long Confirm on any record asks Muse for fuller context. It never approves anything.
+- Work, House, Life and Inbox say "Not connected yet" until their adapters exist.
+- An unattended timer/boot wake returns the menu to the dashboard.
+
+Device behaviour:
+
 - Firmware interaction window: 120 seconds since activity. Ambient sleep keeps the
   image visible; the gateway schedules another pull in ten minutes.
 - Fresh Power hold: manual off. Power wake is ignored until released so it cannot
   immediately switch the device off again.
+
+## Agent records
+
+Agents publish typed records through `POST /x4/v1/agent` with the agent token:
+
+```json
+{"action": "record_put", "record": {
+  "id": "pyrrha.menu-order", "kind": "decision", "agent": "pyrrha",
+  "title": "Ship the menu before House?",
+  "summary": "Agents first keeps one interaction grammar before mutations.",
+  "sections": [{"heading": "Risk", "body": "House waits a little longer."}],
+  "options": ["approve", "reject", "defer"], "recommendation": "approve",
+  "expires_at": null}}
+```
+
+- `kind` is `decision` or `report`. Reports take no options.
+- Limits: title 80, summary 600, up to 12 sections (heading 40, body 1200), 2–4
+  lowercase options. A literal `\n` in summary/body becomes a line break.
+- Re-putting an identical body is a no-op. A changed body bumps `revision`, reopens a
+  decision and clears any earlier answer.
+- `record_get` returns `status` (`open`/`answered` or `unread`/`read`), `answer`,
+  `answered_revision`. Agents poll this; answers also forward to Muse as
+  `[x4 decision] ...`.
+- `records` (optional `agent`) lists live records; `record_remove` deletes one.
+
+The gateway renders long reports into screens itself (summary, then each section,
+wrapped to fit); agents never format for the panel.
 
 The clock is explicitly **sampled, not live**. Source observation age and retrieval
 age are distinct. Cached refresh failures, stale data, unavailable sources and an

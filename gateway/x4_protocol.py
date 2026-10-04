@@ -160,6 +160,17 @@ def validate(request):
             raise ValueError('unknown glance operation')
         return {'action':'glance','op':request['op'],
                 'device':_ident(request.get('device','x4-01'),'device',_DEVICE)}
+    if action == "record_put":
+        from x4_records import validate_record
+        _exact(request, {"action", "record"}, action, required=("record",))
+        return {"action": action, "record": validate_record(request["record"])}
+    if action in ("record_get", "record_remove"):
+        _exact(request, {"action", "id"}, action, required=("id",))
+        return {"action": action, "id": _ident(request["id"])}
+    if action == "records":
+        _exact(request, {"action", "agent"}, action)
+        agent = request.get("agent")
+        return {"action": action, "agent": None if agent is None else _ident(agent, "agent", _OWNER)}
     if action == "slide_put":
         return _slide_put(request)
     if action in ("slide_get", "slide_remove"):
@@ -171,7 +182,8 @@ def validate(request):
     if action in ("slides", "status", "capabilities"):
         _exact(request, {"action"}, action)
         return {"action": action}
-    raise ValueError("action must be slide_put, slide_get, slide_remove, slides, events, status or capabilities.")
+    raise ValueError("action must be glance, record_put, record_get, record_remove, records, slide_put, "
+                     "slide_get, slide_remove, slides, events, status or capabilities.")
 
 
 def validate_events(body):
@@ -207,6 +219,9 @@ def capabilities():
         "delivery": {"model": "pull", "shown": "next_wake", "min_poll_s": 300, "max_poll_s": 21600,
                      "note": "The X4 is asleep or powered off most of the time. Accepted means stored; "
                              "it appears when the device next wakes and fetches."},
+        "records": {"kinds": ["decision", "report"], "verbs": ["record_put", "record_get", "record_remove", "records"],
+                    "note": "Records never displace the dashboard; Cassie opens them from Agents/Reports. "
+                            "Answers apply only to the revision she saw; poll record_get for the result."},
         "events": {"forwarded": "presses of a button the card assigned in actions",
                    "local": "left/right page the deck and are not forwarded"},
     }
