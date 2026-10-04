@@ -46,6 +46,8 @@ def work_items(snapshot):
     if snapshot["prs"]["available"]:
         rows.extend(dict(p, kind="pr", value="draft" if p["draft"] else "ready")
                     for p in snapshot["prs"]["data"]["items"])
+    if snapshot["issues"]["available"]:
+        rows.extend(dict(i, kind="issue", value="open") for i in snapshot["issues"]["data"]["items"])
     return rows
 
 
@@ -57,6 +59,10 @@ def detail_pages(item, snapshot):
                 f"State: {'draft' if item['draft'] else 'ready'}\nTarget: {item['base']}\n"
                 f"Updated: {_utc(item['updated_at'])}\nSource: {item['url']}\n"
                 "Read-only: review details on GitHub.")
+    elif item["kind"] == "issue":
+        body = (f"{item['title']}\nAuthor: {item['author']}\nState: open\n"
+                f"Updated: {_utc(item['updated_at'])}\nSource: {item['url']}\n"
+                "Read-only: full issue details on GitHub.")
     else:
         run = item["run"]
         if run is None:
@@ -67,7 +73,9 @@ def detail_pages(item, snapshot):
                     f"Tested: {run['head_sha'][:8]}\nObserved head: {observed}\n"
                     f"Updated: {_utc(run['updated_at'])}\nSource: {run['url']}\n"
                     "Read-only: inspect the build on GitHub.")
-    return paginate({"summary": body, "sections": []}, height=234)
+    # Mode-1 rasterized wide glyphs can exceed fractional font measurements.
+    # Leave a small horizontal margin when wrapping external Work text.
+    return paginate({"summary": body, "sections": []}, width=700, height=234)
 
 
 def _utc(stamp):
@@ -90,7 +98,8 @@ def render_work(state, snapshot, now, tz, chrome):
     items = work_items(snapshot)
     if state["view"] == "work_detail":
         item = next(row for row in items if row["id"] == state["work_id"])
-        title = f"PR #{item['number']}" if item["kind"] == "pr" else "Latest build"
+        title = (f"PR #{item['number']}" if item["kind"] == "pr" else
+                 f"Issue #{item['number']}" if item["kind"] == "issue" else "Latest build")
         image = chrome._canvas(title, "GitHub · Work › " + title, tz, now)
         pages = detail_pages(item, snapshot)
         page = min(state["page"], len(pages) - 1)
@@ -99,7 +108,7 @@ def render_work(state, snapshot, now, tz, chrome):
         for index, line in enumerate(pages[page]["lines"]):
             if line:
                 _text(image, line, (24, 160 + index * 26, 776, 184 + index * 26), 19)
-        section = snapshot["prs" if item["kind"] == "pr" else "build"]
+        section = snapshot[{"pr": "prs", "issue": "issues", "build": "build"}[item["kind"]]]
         _text(image, freshness(section, now), (24, 392, 776, 414), 15, True)
         chrome._footer(image, "▲ ▼ page · hold: refresh Work · Back: Work", state.get("notice"))
         card = "work." + hashlib.sha256(item["id"].encode()).hexdigest()[:16]
@@ -113,23 +122,32 @@ def render_work(state, snapshot, now, tz, chrome):
     _text(image, f"{repo['full_name']} · {branch} {sha} · {label}",
           (24, 122, 776, 150), 17, True)
     cursor = min(state["cursor"], len(items) - 1)
-    start = (cursor // 4) * 4
-    for index, item in enumerate(items[start:start + 4]):
+    start = (cursor // 3) * 3
+    for index, item in enumerate(items[start:start + 3]):
         y = 162 + index * 46
         marked = start + index == cursor
         if marked:
             ImageDraw.Draw(image).rectangle((24, y, 776, y + 40), outline=0, width=2)
-        label = item["title"] if item["kind"] == "build" else f"#{item['number']} {item['title']}"
+        label = (item["title"] if item["kind"] == "build" else
+                 f"Issue #{item['number']} {item['title']}" if item["kind"] == "issue" else
+                 f"PR #{item['number']} {item['title']}")
         _text(image, ("▶ " if marked else "   ") + label, (34, y + 7, 465, y + 33), 18, marked)
         value_size = 14 if item["value"] == "No default-branch builds found" else 16
         _text(image, item["value"], (475, y + 8, 766, y + 32), value_size, marked)
-    if count == 0:
-        _text(image, "No open pull requests", (24, 218, 776, 246), 20)
-    if len(items) > 4:
-        _text(image, f"{start + 1}–{min(start + 4, len(items))} of {len(items)}",
-              (590, 350, 776, 370), 13)
-    _text(image, "PRs: " + freshness(prs, now), (24, 372, 776, 390), 13, True)
-    _text(image, "Build: " + freshness(snapshot["build"], now), (24, 396, 776, 414), 13, True)
+    if len(items) > 3:
+        _text(image, f"{start + 1}-{min(start + 3, len(items))} of {len(items)}",
+              (590, 306, 776, 324), 13)
+    _text(image, "PRs: " + freshness(prs, now) + (" · No open pull requests" if count == 0 else ""),
+          (24, 338, 776, 356), 13, True)
+    issues = snapshot["issues"]
+    issue_label = ""
+    if issues["available"]:
+        issue_count = len(issues["data"]["items"])
+        issue_label = (f"issue list capped ({issue_count} shown)" if issues["data"]["truncated"] else
+                       "No open issues" if issue_count == 0 else f"{issue_count} open issue{'s' if issue_count != 1 else ''}")
+    _text(image, "Issues: " + freshness(issues, now) + (" · " + issue_label if issue_label else ""),
+          (24, 364, 776, 382), 13, True)
+    _text(image, "Build: " + freshness(snapshot["build"], now), (24, 390, 776, 408), 13, True)
     chrome._footer(image, "▲ ▼ choose · Confirm: details · hold: refresh Work · Back", state.get("notice"))
     item = items[cursor]
     return image, "work", {"work_id": item["id"], "work_revision": revision(item)}
