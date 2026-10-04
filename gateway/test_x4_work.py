@@ -58,6 +58,8 @@ class GitHub:
             return {"name": self.branch, "commit": {"sha": HEAD}}
         if "/pulls?" in path:
             return copy.deepcopy(self.prs)
+        if "/issues?" in path:
+            return []
         if "/actions/runs?" in path:
             return {"workflow_runs": copy.deepcopy(self.runs)}
         raise AssertionError(path)
@@ -85,7 +87,7 @@ class Collector(unittest.TestCase):
     def test_empty_prs_and_no_runs_are_available(self):
         self.api = GitHub([], [])
         snap = self.collect()
-        self.assertEqual(snap["schema"], 1)
+        self.assertEqual(snap["schema"], 2)
         self.assertEqual(snap["repository"]["head_sha"], HEAD)
         self.assertEqual(snap["prs"]["data"], {"items": [], "truncated": False})
         self.assertIsNone(snap["build"]["data"]["run"])
