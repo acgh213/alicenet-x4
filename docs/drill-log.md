@@ -61,8 +61,7 @@ Firmware: `0.3.1-ambient` (`c0a6101`). Dashboard: built-in Home/Weather/Agenda g
 | Home / Weather / Agenda rendering | **PASS**: photographs confirm all three real-source pages |
 | Short Confirm → Muse brief | **PASS**: Cassie reports it works on the physical X4 |
 | Long Confirm → local refresh | **PASS**: Cassie reports it works on the physical X4 |
-| Ambient sleep preserving the displayed page | _pending_: awaiting idle timeout |
-| Timer wake / Power wake / latch retention | _pending_ |
+| Ambient sleep preserving the displayed page | **PASS**: Cassie reports the device enters ambient mode and returns to the dashboard |
+| Timer wake / Power wake / latch retention | **PASS**: Cassie reports the device wakes, flashes through the first refresh, and resumes operation |
 
-The navigation path is now physically verified; the remaining release gates are action
-semantics and power behavior, not panel layout or basic input routing.
+The ambient dashboard, navigation, actions, sleep, and wake loop are now physically verified on the X4. Remaining optional characterization is battery sleep-current measurement and repeated-cycle endurance.
