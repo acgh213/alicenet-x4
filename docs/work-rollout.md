@@ -111,9 +111,11 @@ sleep/wake acceptance. That supersedes older pending-install wording. It does
 not establish battery sleep current, exact threshold timing, repeated-cycle
 endurance or interruption/fault measurements.
 
-Work is host-deployed and verified; its new physical button/panel path remains
-pending. Next single device check: from Home press Back, choose Work, open Latest
-build with Confirm, and verify its tested/observed SHA text on the physical panel.
-Then exercise Back and hold Confirm to refresh Work without sending a Muse brief.
-No additional firmware flash is required. House controls and other feature lanes
-are outside this read-only rollout.
+Work is host-deployed and verified. Cassie reported the basic Home → Back → Work
+→ Latest build → Confirm path working in the originating DM on October 4. This
+is user-reported functional acceptance, not a separate measured receipt for exact
+SHA text, every button, hold-refresh, panel fidelity or power/endurance. Do not
+ask her to repeat basic Work acceptance. A later targeted hold-refresh check can
+confirm Work refresh stays local without Muse. No additional firmware flash is
+required. House controls and other feature lanes are outside this rollout; see
+[campaign review](campaign-review.md) for integration rework and the next physical gate.

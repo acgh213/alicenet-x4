@@ -108,5 +108,6 @@ Remaining characterization (not established by that functional drill):
    redraws, honest stale-panel logs; recover with a full first refresh per wake.
 
 Host tests and an accepted SD image do **not** establish physical measurements,
-heap availability under real operation, or these fault/endurance tests. Work's
-physical button/panel acceptance remains distinct from ambient acceptance.
+heap availability under real operation, or these fault/endurance tests. Cassie
+reported basic Work navigation functional on October 4; detailed SHA, hold-refresh
+and measurement checks remain distinct from that user-reported acceptance.
