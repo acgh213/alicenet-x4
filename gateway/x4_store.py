@@ -154,7 +154,7 @@ class Store:
                 "events": counts[0], "pending_forwards": counts[1] or 0, "dwell_s": self.dwell_s}
 
     # ---- events -----------------------------------------------------------
-    def record_events(self, batch, now, action_labels=None, contexts=None, local_only=False):
+    def record_events(self, batch, now, action_labels=None, contexts=None, allow_slide_actions=True, local_only=False):
         """Insert events idempotently on (device, boot, seq); returns the ones that were new."""
         new = []
         with self.lock, self._db() as db:
@@ -164,7 +164,7 @@ class Store:
                     key = ev["button"] + ("_long" if ev["press"] == "long" and ev["button"] == "confirm" else "")
                     if ev['card'] in (action_labels or {}):
                         label = action_labels[ev['card']].get(key)
-                    else:
+                    elif allow_slide_actions:
                         row = db.execute("SELECT body FROM slides WHERE id=?", (ev["card"],)).fetchone()
                         label = json.loads(row["body"])["actions"].get(key) if row else None
                 cur = db.execute("INSERT OR IGNORE INTO events (device, boot, seq, card, etag, button, press, wake, "

@@ -92,6 +92,9 @@ def _house(config, house, http_get, now, previous):
         fetch = lambda entity: feeds._ha_get(config, '/api/states/' + quote(entity, safe='.'), http_get)
         out = x4_house.collect(house, fetch, now)
         out['config_key'] = identity
+        from x4_house_actions import fingerprint
+        ha = config['ha']
+        out['source_key'] = fingerprint((ha.get('origin') or os.environ.get(ha.get('url_env', ''), '')).rstrip('/'))
         return out
     except Exception:
         old = (previous or {}).get('house')

@@ -28,6 +28,8 @@ def _string(value, label, *, empty=False, single_line=True, limit=None):
     if type(value) is not str:
         raise ValueError(f"{label} must be a string.")
     for ch in value:
+        if unicodedata.category(ch) == "Cs":
+            raise ValueError(f"{label} contains an invalid Unicode surrogate.")
         if (ch != "\n" and unicodedata.category(ch) == "Cc") or (single_line and ch == "\n"):
             raise ValueError(f"{label} contains a control character or line break.")
     if not empty and not value.strip():
@@ -112,7 +114,10 @@ def _expiry(value):
         raise ValueError("expires_at is not a valid ISO8601 timestamp.") from exc
     if parsed.utcoffset() is None:
         raise ValueError("expires_at must include a timezone.")
-    return parsed.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        return parsed.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    except OverflowError as exc:
+        raise ValueError("expires_at is outside the supported UTC range.") from exc
 
 
 def _actions(value):

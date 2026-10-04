@@ -51,6 +51,8 @@ class App:
         self.glance = self.menu = self.work = None
         from x4_records import Records
         self.records = Records(self.store)
+        from x4_inbox import Inbox
+        self.inbox = Inbox(self.store, cfg.get('inbox_config'))
         if cfg.get('glance_snapshot'):
             from x4_glance import Glance
             from x4_menu import Menu
@@ -58,7 +60,11 @@ class App:
             if cfg.get('work_snapshot') and cfg.get('work_config'):
                 from x4_work import Work
                 self.work = Work(cfg['work_snapshot'], cfg['work_config'])
-            self.menu = Menu(self.glance, self.records, self.work)
+            house_controls = None
+            if cfg.get("house_controls"):
+                from x4_house_client import Client
+                house_controls = Client(cfg["house_controls"])
+            self.menu = Menu(self.glance, self.records, self.work, house_controls, inbox=self.inbox)
 
     def bump(self):
         with self.changed:
@@ -248,9 +254,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)
-        if length > x4_protocol.MAX_REQUEST:
-            raise ValueError("request too large")
-        return json.loads(self.rfile.read(length) or b"null")
+        if length < 0 or length > x4_protocol.MAX_REQUEST:
+            raise ValueError("request length out of bounds")
+        if hasattr(self, "connection"):
+            self.connection.settimeout(5)
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise ValueError("incomplete request body")
+        return json.loads(raw or b"null")
 
     def _guard(self):
         if not allowed(self.client_address[0], self.app.cfg.get("allow", ["127.0.0.0/8"])):
@@ -283,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         try:
+            if path == "/x4/v1/inbox":
+                return self._inbox_request()
             if path == "/x4/v1/events":
                 return self._events()
             if path == "/x4/v1/agent":
@@ -292,6 +305,43 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "not found"})
         except ValueError as exc:  # includes json.JSONDecodeError
             self._json(400, {"ok": False, "error": str(exc)})
+
+    def _inbox_request(self):
+        """Authenticated push only. Generic errors never echo private payloads."""
+        import sqlite3
+        from x4_inbox import fingerprint
+        if not self.app.is_agent(self._token()):
+            return self._json(401, {"ok": False, "error": "agent token required"})
+        try:
+            body = self._body()
+            if type(body) is not dict:
+                raise ValueError("invalid request")
+            op, now = body.get("op"), time.time()
+            if op == "put":
+                x4_protocol._exact(body, {"op", "message"}, "inbox", required=("message",))
+                result = self.app.inbox.put(body["message"], now)
+            elif op == "list":
+                x4_protocol._exact(body, {"op"}, "inbox")
+                result = self.app.inbox.snapshot(now)
+            elif op == "remove":
+                x4_protocol._exact(body, {"op", "key"}, "inbox", required=("key",))
+                key = x4_protocol._string(body["key"], "key", limit=64)
+                if len(key) != len(fingerprint(None)) or any(c not in "0123456789abcdef" for c in key):
+                    raise ValueError("invalid key")
+                result = {"removed": self.app.inbox.remove(key, now)}
+            elif op == "status":
+                result = self.app.inbox.set_status({k: v for k, v in body.items() if k != "op"}, now)
+            else:
+                raise ValueError("unknown op")
+            if op != "list":
+                self.app.bump()
+            return self._json(200, {"ok": True, "result": result})
+        except PermissionError:
+            return self._json(403, {"ok": False, "error": "Inbox scope not authorized"})
+        except (ValueError, TypeError, RecursionError):
+            return self._json(400, {"ok": False, "error": "Invalid Inbox request"})
+        except sqlite3.Error:
+            return self._json(503, {"ok": False, "error": "Inbox unavailable"})
 
     def _frame(self, query):
         device = self.app.device_for(self._token())
@@ -340,11 +390,17 @@ class Handler(BaseHTTPRequestHandler):
         contexts = self.app.glance.event_context(batch) if self.app.glance else None
         new = self.app.store.record_events(batch, now=now,
                   action_labels=self.app.glance.action_labels() if self.app.glance else None,
-                  contexts=contexts, local_only=bool(self.app.menu))
+                  contexts=contexts, local_only=bool(self.app.menu),
+                  allow_slide_actions=self.app.menu is None)
         moved = forward = False
         for ev in new:
             if self.app.menu:
-                result = self.app.menu.handle(device, ev, now=now, tz=self.app.tz)
+                result = self.app.menu.handle(device, ev, now=now, tz=self.app.tz, defer_house=True)
+                if result.get('house_execute'):
+                    def execute_house(execute=result['house_execute']):
+                        execute()
+                        self.app.bump()
+                    threading.Thread(target=execute_house, daemon=True).start()
                 moved = result['moved'] or moved
                 if result['refresh']:
                     # Keep the HTTP acknowledgement fast; collection may take seconds.

@@ -14,6 +14,8 @@ import time
 from PIL import Image, ImageDraw
 
 from x4_dashboard import _age, _font, _state, _text
+from x4_house_view import HouseViews
+from x4_inbox_view import InboxViews
 from x4_life import LifeMenuMixin
 
 DESTINATIONS = ("home", "work", "agents", "house", "life", "reports", "inbox", "status")
@@ -23,7 +25,7 @@ BLURBS = {"home": "Clock, weather, agenda", "work": "PRs, issues, CI",
           "agents": "Decisions and agent reports", "house": "Home Assistant",
           "life": "Now, day and opt-in notes", "reports": "Everything to read",
           "inbox": "Approved message threads", "status": "Device and sources"}
-PLANNED = {"inbox": "Approved Telegram threads only, read-only. Replies need a stronger confirmation."}
+PLANNED = {}
 ROWS = 6          # list rows per screen
 BODY = (24, 128, 776, 404)
 LINE = 26         # body line pitch at 19 px
@@ -114,10 +116,12 @@ def paginate(record, width=BODY[2] - BODY[0], height=BODY[3] - BODY[1]):
     return pages
 
 
-class Menu(LifeMenuMixin):
-    def __init__(self, glance, records, work=None):
+class Menu(HouseViews, InboxViews, LifeMenuMixin):
+    def __init__(self, glance, records, work=None, house_controls=None, inbox=None):
         self.glance, self.records, self.store = glance, records, glance.store
         self.work = work
+        self.house_controls = house_controls
+        self.inbox = inbox
         with self.store.lock, self.store._db() as db:
             db.execute(SCHEMA)
 
@@ -133,7 +137,9 @@ class Menu(LifeMenuMixin):
 
     def _save(self, device, state):
         with self.store.lock, self.store._db() as db:
-            db.execute("INSERT INTO menu_state VALUES (?,?) ON CONFLICT(device) DO UPDATE SET body=excluded.body",
+            db.execute("INSERT INTO menu_state VALUES (?,json_set(?, '$._navigation_revision', 1)) "
+                       "ON CONFLICT(device) DO UPDATE SET body=json_set(excluded.body, "
+                       "'$._navigation_revision', COALESCE(json_extract(menu_state.body, '$._navigation_revision'), 0)+1)",
                        (device, json.dumps(state)))
 
     def wake(self, device, wake):
@@ -154,6 +160,9 @@ class Menu(LifeMenuMixin):
         # One Work observation covers settling and rendering: a timer collector
         # can atomically replace the source file while a frame is being drawn.
         work_snapshot = self._work() if state["view"] in ("work", "work_detail") else None
+        inbox_snapshot = self._inbox(now) if state["view"] in ("inbox", "inbox_detail") else None
+        if inbox_snapshot is not None:
+            state = self._settle_inbox(device, state, inbox_snapshot)
         life_snapshot, life_items = None, []
         if state["view"] in ("life", "life_note"):
             from x4_life import notes
@@ -163,11 +172,27 @@ class Menu(LifeMenuMixin):
         if state["view"] == "glance":
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
         from x4_render import etag, to_pbm
-        image, card, extra = self._render(device, state, now, tz, work_snapshot, life_snapshot, life_items)
+        if inbox_snapshot is not None:
+            image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+            if self.inbox is not None and self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                # Rendering can be slow. Re-project changed consent before publishing,
+                # never return pixels built from the earlier authorization.
+                inbox_snapshot = self._inbox(now)
+                state = self._settle_inbox(device, state, inbox_snapshot)
+                image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+                if self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                    from x4_inbox_view import empty_snapshot
+                    inbox_snapshot = dict(empty_snapshot(), state="error")
+                    state = self._settle_inbox(device, state, inbox_snapshot)
+                    image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+        else:
+            image, card, extra = self._render(device, state, now, tz, work_snapshot, life_snapshot, life_items)
         pbm = to_pbm(image)
-        tag = '"' + etag(pbm) + '"'
+        tag = '"' + etag(pbm + extra.get('frame_identity', '').encode()) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
                    "choice": state["choice"], "card": card, **extra}
+        if inbox_snapshot is not None:
+            tag = self._inbox_etag(pbm, context)
         with self.store.lock, self.store._db() as db:
             db.execute("INSERT OR IGNORE INTO glance_frames VALUES (?,?,?,?,?)",
                        (device, tag, card, json.dumps(context, ensure_ascii=False), now))
@@ -185,6 +210,7 @@ class Menu(LifeMenuMixin):
 
     def _settle(self, device, state, now, work_snapshot=None):
         """A record or room that vanished drops Cassie back to its list, not an error."""
+        state = self._reconcile_house_receipt(device, state)
         if state["view"] == "work_detail":
             from x4_work_view import work_items, revision
             item = next((i for i in work_items(work_snapshot) if i["id"] == state["work_id"]), None)
@@ -216,11 +242,17 @@ class Menu(LifeMenuMixin):
         return json.loads(row["body"]) if row else None
 
     # ---- buttons ------------------------------------------------------------------------
-    def handle(self, device, ev, now, tz):
+    def handle(self, device, ev, now, tz, defer_house=False):
         """Apply one new (deduplicated) event. Returns what x4d must do next."""
         state = self.state(device)
         button, press = ev["button"], ev["press"]
-        result = {"moved": False, "label": None, "refresh": False}
+        result = {"moved": False, "label": None, "refresh": False, "defer_house": defer_house}
+        shown = self._shown(device, ev)
+        if ((shown or {}).get("view") in ("inbox", "inbox_detail")
+                or ev.get("card") == "inbox" or (ev.get("card") or "").startswith("inbox.")
+                or state["view"] in ("inbox", "inbox_detail")):
+            if shown is None or shown.get("view") != state["view"]:
+                return result
         # Delayed Life presses cannot become briefings after timer/home navigation.
         if state["view"] not in ("life", "life_note") and (ev.get("card") or "").startswith("life."):
             return result
@@ -262,7 +294,7 @@ class Menu(LifeMenuMixin):
             if target == "home":
                 self.go_home(device)
                 return dict(result, moved=True)
-            state.update(view=target if target in ("agents", "reports", "status", "house", "work", "life") else "soon." + target,
+            state.update(view=target if target in ("agents", "reports", "status", "house", "work", "life", "inbox") else "soon." + target,
                          cursor=0, agent=None, record=None, page=0, life_part="now", life_record=None)
         else:
             return result
@@ -397,13 +429,15 @@ class Menu(LifeMenuMixin):
         elif button == "confirm" and rooms and shown is not None:
             names = [r["name"] for r in rooms]
             wanted = shown.get("highlighted")
-            state.update(view="room", room=wanted if wanted in names else names[min(state["cursor"], len(names) - 1)])
+            state.update(view="room", room=wanted if wanted in names else names[min(state["cursor"], len(names) - 1)], cursor=0)
         else:
             return result
         self._save(device, state)
         return dict(result, moved=True)
 
     def _on_room(self, device, state, button, press, shown, now, result):
+        if self.house_controls:
+            return super()._on_room(device, state, button, press, shown, now, result)
         if button == "confirm" and press == "long":
             return dict(result, refresh=True)
         if button == "back":
@@ -558,6 +592,8 @@ class Menu(LifeMenuMixin):
             return render_work(state, work_snapshot, now, tz, self)
         if view == "status":
             return self._render_status(device, state, now, tz), "status", {}
+        if view in ("house_preview", "house_receipt"):
+            return self._render_house_action(state, now, tz)
         if view in ("house", "room"):
             return self._render_house(state, now, tz)
         name = view.split(".", 1)[1]
@@ -571,6 +607,8 @@ class Menu(LifeMenuMixin):
     def _render_house(self, state, now, tz):
         house = self._house()
         if state["view"] == "room":
+            if self.house_controls:
+                return self._render_control_room(state, now, tz, house)
             room = next(r for r in self._rooms() if r["name"] == state["room"])
             image = self._canvas(room["name"], "House › " + room["name"], tz, now)
             pitch = min(50, 286 // max(1, len(room["items"])))  # 8 rows fit; fewer rows breathe
