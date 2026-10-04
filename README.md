@@ -33,6 +33,7 @@ updater. Never use serial PlatformIO upload.
 - [docs/architecture.md](docs/architecture.md): option comparison and recommendation
 - [docs/protocol.md](docs/protocol.md): X4 protocol v1 (PBM frames down, JSON events up)
 - [docs/future-surface.md](docs/future-surface.md): product and implementation roadmap
+- [docs/interaction-model.md](docs/interaction-model.md): persistent destinations and button grammar
 - [docs/ambient-release.md](docs/ambient-release.md): release handoff and physical verification
 - [docs/drill-log.md](docs/drill-log.md): hardware evidence log
 - [firmware/README.md](firmware/README.md): build/install contract

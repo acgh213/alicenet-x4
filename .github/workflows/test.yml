@@ -20,6 +20,6 @@ jobs:
       - name: Install renderer dependency
         run: python -m pip install --upgrade Pillow
       - name: Gateway tests
-        run: env -u PYTHONPATH -u PYTHONHOME python -W error::ResourceWarning -m unittest discover -s gateway -p 'test_*.py'
+        run: env -u PYTHONPATH -u PYTHONHOME PYTHONPATH="$GITHUB_WORKSPACE/gateway/test_support" python -W error::ResourceWarning -m unittest discover -s gateway -p 'test_*.py'
       - name: Tool tests
         run: env -u PYTHONPATH -u PYTHONHOME python -m unittest discover -s tools -p 'test_*.py'
