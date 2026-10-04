@@ -58,7 +58,11 @@ class App:
             if cfg.get('work_snapshot') and cfg.get('work_config'):
                 from x4_work import Work
                 self.work = Work(cfg['work_snapshot'], cfg['work_config'])
-            self.menu = Menu(self.glance, self.records, self.work)
+            house_controls = None
+            if cfg.get("house_controls"):
+                from x4_house_client import Client
+                house_controls = Client(cfg["house_controls"])
+            self.menu = Menu(self.glance, self.records, self.work, house_controls)
 
     def bump(self):
         with self.changed:
@@ -341,7 +345,12 @@ class Handler(BaseHTTPRequestHandler):
         moved = forward = False
         for ev in new:
             if self.app.menu:
-                result = self.app.menu.handle(device, ev, now=now, tz=self.app.tz)
+                result = self.app.menu.handle(device, ev, now=now, tz=self.app.tz, defer_house=True)
+                if result.get('house_execute'):
+                    def execute_house(execute=result['house_execute']):
+                        execute()
+                        self.app.bump()
+                    threading.Thread(target=execute_house, daemon=True).start()
                 moved = result['moved'] or moved
                 if result['refresh']:
                     # Keep the HTTP acknowledgement fast; collection may take seconds.
