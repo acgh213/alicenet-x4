@@ -42,9 +42,11 @@ Responses:
 - `200 OK`, `Content-Type: image/x-portable-bitmap`: a **P4 PBM, 800×480 exactly**, 48,000-byte
   raster after the header. PBM bit 1 = black; the device inverts into FreeInkDisplay's
   1 = white buffer. Headers:
-  - `ETag`: content-addressed; most views use a PBM hash, Inbox also hashes its
-    opaque displayed identity/revision/page context (up to 48 hex characters).
-    Identical pixels cannot rebind Inbox buttons to a different private report.
+  - `ETag`: most views use a PBM hash. House control rooms also bind selected
+    entity, HA source and observation fingerprint; Inbox also hashes its opaque
+    displayed identity/revision/page context (up to 48 hex characters).
+    Identical pixels with changed action/report context must return a new frame,
+    not 304, and cannot rebind buttons to a different target or private report.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
   - `X-Card: weather.today`: the current card id, echoed back with events

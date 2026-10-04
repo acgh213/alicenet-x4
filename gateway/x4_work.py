@@ -22,6 +22,7 @@ from urllib.parse import quote, urlencode
 REPOSITORY = "acgh213/alicenet-x4"
 API = "https://api.github.com"
 BODY_LIMIT = 1024 * 1024
+SECTIONS = ("prs", "build", "issues")
 _SHA = re.compile(r"[0-9a-f]{40}")
 STATUSES = {"queued", "in_progress", "completed", "waiting", "requested", "pending"}
 CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out",
@@ -88,6 +89,16 @@ def project_pr(raw, now):
             "draft": raw["draft"], "base": _text(raw["base"]["ref"], 240),
             "updated_at": _stamp(raw["updated_at"], now),
             "url": _url(raw["html_url"], f"pull/{number}")}
+
+
+def project_issue(raw, now):
+    number = _number(raw["number"])
+    if raw.get("state") != "open" or "pull_request" in raw:
+        raise ValueError("invalid open issue")
+    return {"id": f"gh:{REPOSITORY}:issue:{number}", "number": number,
+            "title": _text(raw["title"]), "author": _text(raw["user"]["login"], 80),
+            "state": "open", "updated_at": _stamp(raw["updated_at"], now),
+            "url": _url(raw["html_url"], f"issues/{number}")}
 
 
 def project_run(raw, branch, now):
@@ -278,7 +289,7 @@ def collect(config, *, now, previous=None, http_get=None, monotonic=None):
     reader = http_get or globals()["http_get"]
     key = config_key(config)
     old = previous if isinstance(previous, dict) and previous.get("config_key") == key else {}
-    result = {"schema": 1, "config_key": key, "stale_after_s": 1800,
+    result = {"schema": 2, "config_key": key, "stale_after_s": 1800,
               "repository": {"full_name": REPOSITORY, "default_branch": None, "head_sha": None}}
     def fetch(path):
         if clock() >= deadline:
@@ -308,26 +319,30 @@ def collect(config, *, now, previous=None, http_get=None, monotonic=None):
             result["repository"] = copy.deepcopy(old["repository"])
         elif branch == prior_branch:
             result["repository"]["head_sha"] = old.get("repository", {}).get("head_sha")
-        for section in ("prs", "build"):
+        for section in SECTIONS:
             prior = old.get(section)
             if section == "build" and branch is not None and prior_branch != branch:
                 prior = None
             result[section] = _failed(prior, _error(exc))
         return result
-    for section in ("prs", "build"):
+    for section in SECTIONS:
         try:
-            if section == "prs":
+            if section in ("prs", "issues"):
                 items, truncated = [], False
+                endpoint = "pulls" if section == "prs" else "issues"
                 for page in (1, 2):
-                    raw = fetch(f"/repos/{REPOSITORY}/pulls?state=open&sort=updated&direction=desc&per_page=50&page={page}")
+                    raw = fetch(f"/repos/{REPOSITORY}/{endpoint}?state=open&sort=updated&direction=desc&per_page=50&page={page}")
                     if type(raw) is not list or len(raw) > 50:
-                        raise ValueError("invalid pull list")
-                    items.extend(project_pr(p, now) for p in raw)
+                        raise ValueError("invalid work list")
+                    for item in raw:
+                        if section == "issues" and isinstance(item, dict) and "pull_request" in item:
+                            continue
+                        items.append((project_pr if section == "prs" else project_issue)(item, now))
                     if len(raw) < 50:
                         break
                     truncated = page == 2  # conservatively label a full capped page
                 if len({p["id"] for p in items}) != len(items):
-                    raise ValueError("duplicate pulls")
+                    raise ValueError("duplicate work items")
                 data = {"items": items, "truncated": truncated}
             else:
                 query = urlencode({"branch": branch, "per_page": 1})
@@ -374,8 +389,12 @@ def validate_snapshot(snapshot, config):
     def keys(value, expected):
         if type(value) is not dict or set(value) != set(expected):
             raise ValueError("invalid snapshot fields")
-    keys(snapshot, ("schema", "config_key", "stale_after_s", "repository", "prs", "build"))
-    if not isinstance(snapshot, dict) or snapshot.get("schema") != 1 or snapshot.get("config_key") != config_key(config):
+    if type(snapshot) is not dict or type(snapshot.get("schema")) is not int or snapshot["schema"] not in (1, 2):
+        raise ValueError("invalid snapshot schema")
+    schema = snapshot["schema"]
+    names = ("prs", "build") if schema == 1 else SECTIONS
+    keys(snapshot, ("schema", "config_key", "stale_after_s", "repository", *names))
+    if snapshot.get("config_key") != config_key(config):
         raise ValueError("invalid snapshot")
     repo = snapshot["repository"]
     keys(repo, ("full_name", "default_branch", "head_sha"))
@@ -388,7 +407,7 @@ def validate_snapshot(snapshot, config):
         _sha(repo["head_sha"])
         if branch is None:
             raise ValueError("head requires a branch")
-    for name in ("prs", "build"):
+    for name in names:
         section = snapshot[name]
         keys(section, ("available", "collected_at", "refresh_failed", "error", "data"))
         if type(section["available"]) is not bool or type(section["refresh_failed"]) is not bool:
@@ -408,16 +427,20 @@ def validate_snapshot(snapshot, config):
         if branch is None:
             raise ValueError("missing branch")
         data = section["data"]
-        keys(data, ("items", "truncated") if name == "prs" else ("run",))
-        if name == "prs":
+        keys(data, ("items", "truncated") if name in ("prs", "issues") else ("run",))
+        if name in ("prs", "issues"):
             if type(data["items"]) is not list or len(data["items"]) > 100 or type(data["truncated"]) is not bool:
                 raise ValueError("invalid cached pulls")
             for p in data["items"]:
                 raw = {"number": p["number"], "title": p["title"], "user": {"login": p["author"]},
-                       "draft": p["draft"], "base": {"ref": p["base"]}, "html_url": p["url"],
+                       "html_url": p["url"],
                        "updated_at": dt.datetime.fromtimestamp(p["updated_at"], dt.timezone.utc).isoformat()}
-                if project_pr(raw, stamp) != p:
-                    raise ValueError("invalid cached pull")
+                if name == "prs":
+                    raw.update(draft=p["draft"], base={"ref": p["base"]})
+                else:
+                    raw["state"] = p["state"]
+                if (project_pr if name == "prs" else project_issue)(raw, stamp) != p:
+                    raise ValueError("invalid cached work item")
             if len({p["id"] for p in data["items"]}) != len(data["items"]):
                 raise ValueError("duplicate cached pulls")
         elif data["run"] is not None:
@@ -428,6 +451,9 @@ def validate_snapshot(snapshot, config):
                    "html_url": r["url"]}
             if project_run(raw, branch, stamp) != r:
                 raise ValueError("invalid cached build")
+    if schema == 1:
+        snapshot = dict(snapshot, schema=2, issues={"available": False, "collected_at": None,
+                                                 "refresh_failed": False, "error": None, "data": None})
     return snapshot
 
 
@@ -500,7 +526,7 @@ def main(argv=None):
                 previous = None
             snapshot = collect(config, now=time.time(), previous=previous)
             write_snapshot(args.output, snapshot)
-            return int(any(snapshot[s]["refresh_failed"] for s in ("prs", "build")))
+            return int(any(snapshot[s]["refresh_failed"] for s in SECTIONS))
     except (OSError, ValueError, TypeError, KeyError):
         print("Work config or snapshot unavailable")
         return 1
