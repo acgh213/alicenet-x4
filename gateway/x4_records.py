@@ -98,6 +98,10 @@ class Records:
         self.store = store
         with store.lock, store._db() as db:
             db.execute(SCHEMA)
+            # Retain only id/revision tombstones, never deleted private content.
+            db.execute("CREATE TABLE IF NOT EXISTS record_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
+            db.execute("INSERT INTO record_revisions SELECT id, revision FROM records WHERE 1 "
+                       "ON CONFLICT(id) DO UPDATE SET revision=MAX(revision, excluded.revision)")
 
     @staticmethod
     def _row(row):
@@ -114,9 +118,11 @@ class Records:
         with self.store.lock, self.store._db() as db:
             row = db.execute("SELECT body FROM records WHERE id=?", (record["id"],)).fetchone()
             if row is None:
+                previous = db.execute("SELECT revision FROM record_revisions WHERE id=?", (record["id"],)).fetchone()
+                revision = 1 if previous is None else previous["revision"] + 1
                 db.execute("INSERT INTO records (id,kind,agent,body,revision,status,created_at,updated_at) "
-                           "VALUES (?,?,?,?,1,?,?,?)",
-                           (record["id"], record["kind"], record["agent"], body, fresh, now, now))
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           (record["id"], record["kind"], record["agent"], body, revision, fresh, now, now))
             elif row["body"] != body:
                 # A revised record is a new question: earlier answers do not carry over.
                 db.execute("UPDATE records SET kind=?, agent=?, body=?, revision=revision+1, status=?, answer=NULL, "
@@ -130,6 +136,8 @@ class Records:
 
     def remove(self, ident):
         with self.store.lock, self.store._db() as db:
+            db.execute("INSERT INTO record_revisions SELECT id, revision FROM records WHERE id=? "
+                       "ON CONFLICT(id) DO UPDATE SET revision=MAX(revision, excluded.revision)", (ident,))
             return db.execute("DELETE FROM records WHERE id=?", (ident,)).rowcount > 0
 
     def list(self, now, agent=None, kind=None):

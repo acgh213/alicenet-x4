@@ -16,15 +16,19 @@ Body text: pass TEXT (a literal "\\n" becomes a line break), --stdin, or repeate
 
 Config: --config PATH, else $X4CTL_CONFIG, else ~/.config/x4ctl/config.json:
   {"gateway": "http://192.168.18.61:8787", "agent_token": "..."}
+For restricted own-record publishing, mode0600 config uses publisher_token instead
+of agent_token; the endpoint is /x4/v1/publisher, never a broad-token fallback.
 """
 import argparse
 import json
 import os
+import stat
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import Image
 
@@ -35,6 +39,7 @@ import x4_render
 MAX_STDIN = 8192
 MAX_MARKDOWN = 32768
 MAX_AVATAR_BYTES = 1024 * 1024
+MAX_PUBLISHER_RESPONSE = 2 * 1024 * 1024
 
 
 class CLIError(ValueError):
@@ -248,14 +253,115 @@ def _config(path):
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
+            mode = stat.S_IMODE(os.fstat(fh.fileno()).st_mode)
     except (OSError, json.JSONDecodeError) as exc:
-        raise CLIError(f"cannot read x4ctl config {path}: {exc}") from exc
-    if not cfg.get("gateway") or not cfg.get("agent_token"):
+        raise CLIError("cannot read x4ctl config") from exc
+    if not isinstance(cfg, dict):
+        raise CLIError("x4ctl config must be an object")
+    if "publisher_token" in cfg:
+        if mode != 0o600:
+            raise CLIError("publisher config must have mode 0600")
+        if "agent_token" in cfg:
+            raise CLIError("publisher config needs only publisher_token, not agent_token")
+        _publisher_token(cfg["publisher_token"])
+        _publisher_gateway(cfg.get("gateway"))
+    elif not cfg.get("gateway") or not cfg.get("agent_token"):
         raise CLIError("x4ctl config needs gateway and agent_token.")
     return cfg
 
 
+def _publisher_token(token):
+    if not isinstance(token, str) or not token or any(not 33 <= ord(ch) <= 126 for ch in token):
+        raise CLIError("invalid publisher credential")
+    return token
+
+
+def _publisher_gateway(gateway):
+    try:
+        parsed = urlsplit(gateway) if isinstance(gateway, str) else None
+        if (parsed is None or parsed.scheme not in ("http", "https") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or parsed.path not in ("", "/")
+                or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in gateway)):
+            raise ValueError
+        parsed.port  # validate without echoing potentially secret URL contents
+    except ValueError:
+        raise CLIError("publisher gateway must be an HTTP(S) origin without credentials, path or query") from None
+    return gateway.rstrip("/")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _publisher_result(request, result):
+    import x4_publisher
+    action = request["action"]
+    if action == "record_remove":
+        valid = isinstance(result, dict) and type(result.get("removed")) is bool
+    elif action == "record_get" and result is None:
+        valid = True
+    else:
+        rows = result if action == "records" else [result]
+        valid = isinstance(rows, list)
+        try:
+            for row in rows:
+                body = x4_records.validate_record(row["record"])
+                valid = valid and x4_publisher.owns(row) and body["id"] == row["id"] and body["agent"] == row["agent"]
+                valid = valid and type(row["revision"]) is int and row["revision"] > 0
+                expected_id = request["record"]["id"] if action == "record_put" else request.get("id")
+                valid = valid and (expected_id is None or row["id"] == expected_id)
+                valid = valid and row["kind"] == body["kind"]
+                if row["kind"] == "decision":
+                    valid = valid and row["status"] in ("open", "answered")
+                    if row["status"] == "answered":
+                        valid = (valid and row["answer"] in body["options"]
+                                 and type(row["answered_revision"]) is int and row["answered_revision"] == row["revision"])
+                    else:
+                        valid = valid and row["answer"] is None and row["answered_revision"] is None
+                else:
+                    valid = valid and row["status"] in ("unread", "read") and row["answer"] is None
+        except (ValueError, TypeError, KeyError, OverflowError):
+            valid = False
+    if not valid:
+        raise CLIError("invalid publisher response")
+
+
+def _send_publisher(cfg, request):
+    # Server is the authority; local validation is convenience, never a substitute.
+    import x4_publisher
+    try:
+        canonical = x4_publisher.validate_request(request)
+    except PermissionError:
+        raise CLIError("publisher scope required") from None
+    req = urllib.request.Request(_publisher_gateway(cfg.get("gateway")) + "/x4/v1/publisher", method="POST",
+                                 data=json.dumps(canonical).encode(),
+                                 headers={"Authorization": "Bearer " + _publisher_token(cfg["publisher_token"]),
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=15) as resp:
+            data = resp.read(MAX_PUBLISHER_RESPONSE + 1)
+            if len(data) > MAX_PUBLISHER_RESPONSE:
+                raise CLIError("publisher response too large; get/remove records individually")
+            body = json.loads(data)
+        if not isinstance(body, dict) or body.get("ok") is not True or "result" not in body or body.get("principal") != "elsie":
+            raise CLIError("invalid publisher response")
+        _publisher_result(canonical, body["result"])
+        return body
+    except urllib.error.HTTPError as err:
+        with err:
+            code = err.code  # response body and URL are deliberately not relayed
+        raise CLIError(f"publisher HTTP {code}") from None
+    except (json.JSONDecodeError, UnicodeError):
+        raise CLIError("invalid publisher response") from None
+    except OSError:
+        raise CLIError("publisher gateway unreachable") from None
+
+
 def send(cfg, request):
+    if "publisher_token" in cfg:
+        return _send_publisher(cfg, request)
     canonical = x4_protocol.validate(request)  # fail fast locally, same rules as x4d
     req = urllib.request.Request(cfg["gateway"].rstrip("/") + "/x4/v1/agent", method="POST",
                                  data=json.dumps(canonical).encode())
