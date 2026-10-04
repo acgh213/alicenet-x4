@@ -42,8 +42,9 @@ Responses:
 - `200 OK`, `Content-Type: image/x-portable-bitmap`: a **P4 PBM, 800×480 exactly**, 48,000-byte
   raster after the header. PBM bit 1 = black; the device inverts into FreeInkDisplay's
   1 = white buffer. Headers:
-  - `ETag: "<opaque revision, 16 hex>"`: normally content-addressed PBM; House
-    control rooms also bind selected entity, HA source and observation fingerprint.
+  - `ETag`: opaque revision (up to 48 hex characters). Most views hash PBM;
+    House controls also bind selected entity, HA source and observation fingerprint;
+    Inbox also binds opaque displayed identity/revision/page context.
     Identical pixels with changed action context must return a new frame, not 304.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
