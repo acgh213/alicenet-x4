@@ -82,6 +82,102 @@ class InboxHTTP(http.Server):
         self.assertEqual(status, 503)
         self.assertNotIn("private db text", json.dumps(body))
 
+    def test_real_slow_body_overall_deadline_and_stall_return_generic_json(self):
+        from http.client import HTTPConnection
+        import time
+        import threading
+        import test_x4d as http
+        payload = json.dumps({'op': 'put', 'message': message(text='PRIVATE slow report')}).encode()
+        for trickle in (False, True):
+            conn = HTTPConnection(*self.httpd.server_address, timeout=3)
+            self.addCleanup(conn.close)
+            conn.putrequest('POST', '/x4/v1/inbox')
+            conn.putheader('Authorization', 'Bearer ' + http.AGENT_TOKEN)
+            conn.putheader('Content-Length', str(len(payload)))
+            stop = threading.Event()
+            def send_chunks():
+                try:
+                    conn.send(payload[:1])
+                    if trickle:
+                        for byte in payload[1:]:
+                            if stop.wait(0.05): break
+                            conn.send(bytes([byte]))
+                except OSError:
+                    pass
+            with patch.object(x4d, 'BODY_TIMEOUT_S', 0.3):
+                started = time.monotonic()
+                conn.endheaders()
+                writer = threading.Thread(target=send_chunks)
+                writer.start()
+                try:
+                    response = conn.getresponse()
+                    body = response.read()
+                    self.assertEqual(response.status, 408)
+                    self.assertEqual(json.loads(body), {'ok': False, 'error': 'Request body timed out'})
+                    self.assertLess(time.monotonic() - started, 0.8)
+                finally:
+                    stop.set(); writer.join(timeout=2); conn.close()
+            self.assertEqual(self.app.inbox.snapshot(time.time())['items'], [])
+
+    def test_real_remove_revoked_after_policy_read_denies_existence_without_echo(self):
+        key = self.put()[1]['result']['key']
+        policy = self.app.inbox._policy
+        def revoke():
+            result = policy()
+            self.cfg.unlink(missing_ok=True)
+            return result
+        with patch.object(self.app.inbox, '_policy', side_effect=revoke):
+            status, body = self.inbox({'op': 'remove', 'key': key})
+        self.assertEqual(status, 403)
+        self.assertEqual(body, {'ok': False, 'error': 'Inbox scope not authorized'})
+        with self.app.store._db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM inbox_messages').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM inbox_sources').fetchone()[0], 0)
+
+    def test_real_default_deadline_rejects_chunks_at_zero_three_six_seconds(self):
+        import socket
+        import time
+        with socket.create_connection(self.httpd.server_address, timeout=8) as sock:
+            sock.sendall((f'POST /x4/v1/inbox HTTP/1.1\r\nHost: localhost\r\n'
+                          f'Authorization: Bearer {http.AGENT_TOKEN}\r\nContent-Length: 13\r\n\r\n').encode())
+            started = time.monotonic()
+            sock.sendall(b'{"op"')
+            time.sleep(3)
+            sock.sendall(b':"li')
+            response = sock.makefile('rb')
+            with response:
+                status = response.readline()
+                headers = []
+                while True:
+                    line = response.readline()
+                    if line == b'\r\n': break
+                    self.assertTrue(line)
+                    headers.append(line)
+                length = next(int(h.split(b':', 1)[1]) for h in headers if h.lower().startswith(b'content-length:'))
+                body = response.read(length)
+            elapsed = time.monotonic() - started
+            self.assertTrue(status.startswith(b'HTTP/1.0 408'), status)
+            self.assertEqual(json.loads(body), {'ok': False, 'error': 'Request body timed out'})
+            self.assertGreaterEqual(elapsed, 4.5)
+            self.assertLess(elapsed, 5.8)
+            # Planned final chunk at t=6 is too late; the response is already final.
+        self.assertEqual(self.app.inbox.snapshot(time.time())['items'], [])
+
+    def test_body_wire_bounds_and_decode_errors_return_generic_400(self):
+        import socket
+        for length, payload in (('16385', b''), ('-1', b''), ('private-length', b''),
+                                ('2', b'\xff\xff'), ('50', b'{')):
+            with self.subTest(length=length), socket.create_connection(self.httpd.server_address, timeout=2) as sock:
+                sock.sendall((f'POST /x4/v1/inbox HTTP/1.1\r\nHost: localhost\r\n'
+                              f'Authorization: Bearer {http.AGENT_TOKEN}\r\nContent-Length: {length}\r\n\r\n').encode() + payload)
+                sock.shutdown(socket.SHUT_WR)
+                response = sock.makefile('rb')
+                with response:
+                    data = response.read()
+                self.assertTrue(data.startswith(b'HTTP/1.0 400'), data)
+                self.assertIn(b'Invalid Inbox request', data)
+                self.assertNotIn(b'private-length', data)
+
     def test_negative_length_rejected_before_body_read(self):
         import io
         handler = object.__new__(x4d.Handler)

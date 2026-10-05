@@ -29,6 +29,7 @@ from x4_store import Store
 
 FW_HEADERS = {"X-Wake": "wake", "X-Battery": "battery", "X-Rssi": "rssi", "X-Fw": "fw"}
 NAVIGATION = {"right": +1, "left": -1}
+BODY_TIMEOUT_S = 5
 
 
 def allowed(ip, cidrs):
@@ -257,12 +258,24 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length < 0 or length > x4_protocol.MAX_REQUEST:
             raise ValueError("request length out of bounds")
-        if hasattr(self, "connection"):
-            self.connection.settimeout(5)
-        raw = self.rfile.read(length)
-        if len(raw) != length:
-            raise ValueError("incomplete request body")
-        return json.loads(raw or b"null")
+        deadline = time.monotonic() + BODY_TIMEOUT_S
+        chunks, remaining = [], length
+        while remaining:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError('request body deadline')
+            if hasattr(self, 'connection'):
+                self.connection.settimeout(budget)
+            # read() can perform several recv calls with renewed inactivity
+            # timeouts. read1() returns after one buffered/socket read instead.
+            chunk = self.rfile.read1(remaining)
+            if time.monotonic() >= deadline:
+                raise TimeoutError('request body deadline')
+            if not chunk:
+                raise ValueError("incomplete request body")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return json.loads(b''.join(chunks) or b"null")
 
     def _guard(self):
         if not allowed(self.client_address[0], self.app.cfg.get("allow", ["127.0.0.0/8"])):
@@ -304,6 +317,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(401, {"ok": False, "error": "agent token required"})
                 return self._json(200, {"ok": True, **self.app.agent(self._body(), time.time())})
             self._json(404, {"ok": False, "error": "not found"})
+        except TimeoutError:
+            # Fixed response for every endpoint: never echo private body/error data.
+            self.close_connection = True
+            self.connection.settimeout(BODY_TIMEOUT_S)
+            self._json(408, {"ok": False, "error": "Request body timed out"})
         except ValueError as exc:  # includes json.JSONDecodeError
             self._json(400, {"ok": False, "error": str(exc)})
 

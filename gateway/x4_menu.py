@@ -171,24 +171,31 @@ class Menu(HouseViews, InboxViews, LifeMenuMixin):
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
         from x4_render import etag, to_pbm
         if inbox_snapshot is not None:
-            image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
-            if self.inbox is not None and self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
-                # Rendering can be slow; re-project changed consent before publication.
-                inbox_snapshot = self._inbox(now)
-                state = self._settle_inbox(device, state, inbox_snapshot)
+            # Check AFTER serialization; a consent change while converting pixels
+            # must not return the old payload. Retry once, then render empty.
+            attempt = 0
+            while True:
                 image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
-                if self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                pbm = to_pbm(image)
+                if (attempt == 2 or self.inbox is None
+                        or self.inbox.policy_key() == inbox_snapshot.get('policy_key')):
+                    break
+                if attempt == 0:
+                    inbox_snapshot = self._inbox(now)
+                else:
                     from x4_inbox_view import empty_snapshot
-                    inbox_snapshot = dict(empty_snapshot(), state="error")
-                    state = self._settle_inbox(device, state, inbox_snapshot)
-                    image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+                    inbox_snapshot = dict(empty_snapshot(), state='error')
+                state = self._settle_inbox(device, state, inbox_snapshot)
+                attempt += 1
         else:
             image, card, extra = self._render(device, state, now, tz, work_snapshot, life_snapshot, life_items)
-        pbm = to_pbm(image)
+            pbm = to_pbm(image)
         tag = '"' + etag(pbm + extra.get('frame_identity', '').encode()) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
                    "choice": state["choice"], "card": card, **extra}
-        if inbox_snapshot is not None:
+        if inbox_snapshot is not None or state['view'] in ('life', 'life_note'):
+            # Firmware keeps identity on 304; equal pixels with new semantic
+            # context therefore require a 200 carrying the new ETag and X-Card.
             tag = self._inbox_etag(pbm, context)
         with self.store.lock, self.store._db() as db:
             db.execute("INSERT OR IGNORE INTO glance_frames VALUES (?,?,?,?,?)",

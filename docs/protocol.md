@@ -38,20 +38,22 @@ Request headers:
 - `If-None-Match: "<etag>"`
 
 Responses:
-- `304 Not Modified`: keep the current screen. **No refresh at all, which is the common case.**
+- `304 Not Modified`: keep the current screen and event identity. Current firmware
+  updates `X-Card`/ETag only on 200, not 304. **No refresh at all in the common case.**
 - `200 OK`, `Content-Type: image/x-portable-bitmap`: a **P4 PBM, 800×480 exactly**, 48,000-byte
   raster after the header. PBM bit 1 = black; the device inverts into FreeInkDisplay's
   1 = white buffer. Headers:
   - `ETag`: opaque revision (up to 48 hex characters). Most views hash PBM;
     House controls also bind selected entity, HA source and observation fingerprint;
-    Inbox also binds opaque displayed identity/revision/page context.
+    Inbox and Life also bind opaque displayed identity/revision/page context.
     Identical pixels with changed action context must return a new frame, not 304.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
   - `X-Card: weather.today`: the current card id, echoed back with events. Life uses
     `life.<semantic fingerprint>` so identical pixels cannot rebind a different
-    note ID/content/revision or calendar context. A 304 still supplies the current
-    card; the displayed PBM's ETag remains content-addressed.
+    note ID/content/revision or calendar context. ETag also hashes the full Life
+    context; equal pixels with a new identity return 200 for existing firmware.
+    A 304 may repeat identity headers, but clients need not adopt them.
   - `X-Card-Actions: confirm,confirm_long,down`: buttons this card assigned (subset of
     `confirm, confirm_long, back, up, down`; Left/Right always page the deck)
   - `X-Next-Poll: 900`: seconds; the device clamps it to [300, 21600]

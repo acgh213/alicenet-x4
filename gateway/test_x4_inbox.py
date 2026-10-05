@@ -134,6 +134,29 @@ class InboxStore(unittest.TestCase):
         self.write(config())
         self.assertEqual(self.inbox.snapshot(NOW)["items"], [])
 
+    def test_remove_late_revocation_denies_existence_and_commits_purge(self):
+        from unittest.mock import patch
+        key = self.inbox.put(message(), NOW)['key']
+        policy = self.inbox._policy
+        def revoke():
+            result = policy()
+            self.cfg.unlink(missing_ok=True)
+            return result
+        with patch.object(self.inbox, '_policy', side_effect=revoke):
+            with self.assertRaises(PermissionError):
+                self.inbox.remove(key, NOW)
+        self.write(config())
+        with self.store._db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM inbox_messages').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM inbox_sources').fetchone()[0], 0)
+
+    def test_remove_denied_after_revocation_cannot_restore_deleted_rows(self):
+        key = self.inbox.put(message(), NOW)['key']
+        self.cfg.unlink()
+        self.assertFalse(self.inbox.remove(key, NOW))
+        self.write(config())
+        self.assertEqual(self.inbox.snapshot(NOW)['items'], [])
+
     def test_late_status_consent_change_rolls_back(self):
         from unittest.mock import patch
         policy = self.inbox._policy
