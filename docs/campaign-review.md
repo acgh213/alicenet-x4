@@ -1,10 +1,12 @@
 # X4 campaign integration review — 2026-10-04
 
 Verdict of the initial independent review: REQUEST_CHANGES. Existing automated
-gates passed; adversarial probes found seven defects. The repair phase below has
-regression-tested corrections ready for independent re-review, not release
-acceptance. Do not merge individual PRs or this branch, deploy it, enable House
-controls, or activate live Inbox ingestion on the basis of green CI.
+gates passed; adversarial probes found seven defects. Independent re-review of
+`878bafd` cleared all seven original findings, but returned REQUEST_CHANGES for
+inherited Work renderer availability defect W1. The bounded W1 correction below
+is regression-tested and awaiting another independent exact-head review, not
+release acceptance. Do not merge individual PRs or this branch, deploy it, enable
+House controls, or activate live Inbox ingestion on the basis of green CI.
 
 ## Exact inputs
 
@@ -241,6 +243,56 @@ card handoff; prior-head CI is not sufficient. Keep PR12 Draft OPEN and request
 same-card independent buildreviewer review. REQUEST_CHANGES remains the historical
 review verdict until that reviewer accepts this exact head; no campaign or
 physical acceptance is inferred from reconciliation or green automated gates.
+
+### Independent reconciled-head review and bounded W1 follow-up
+
+Independent buildreviewer at exact `878bafd` returned REQUEST_CHANGES, while
+clearing H1/H2/H3/I1/I2/I3/L1. It independently reran 413 gateway tests, tools
+15 pass/one private-artifact skip, four unchanged parent probes, and the
+100-test overlapping seven-module subset; both exact-head CI events passed.
+Those results do not negate the newly reproduced inherited Work issue defect.
+
+W1 / P2: accepted title `"a" + "\u0301" * 5` reached the unchanged upstream Work
+view. Stacked combining marks exceeded the vertical raster box on both overview
+and detail; authenticated real loopback GET dropped the connection. Ordinary
+control returned HTTP200/48011-byte PBM. This was inherited from `c5e775e`, not
+recurrence of the original seven repairs or a reconciliation-resolution bug.
+
+Bounded correction: reuse the existing selected-font NFC/display policy only at
+Work text drawing and before detail pagination. Supported accents remain native;
+remaining combining marks and missing BMP/non-BMP glyphs use literal ASCII
+code-point escapes. This covers issue/PR titles and authors, PR target, build
+workflow/branch, and repository overview text. Collector/cache content, item IDs,
+URLs and source-based revision hashes remain unchanged. No record is silently
+dropped, raster layout assertions are not weakened, and HTTP does not swallow
+rendering errors. Normal display ellipsis/page wrapping still applies.
+
+Actually executed W1 follow-up verification:
+
+- Unchanged independent HTTP probe first reproduced two RemoteDisconnected errors
+  and one ordinary control pass (3 run, 2.069s); after correction all three pass,
+  HTTP200 and exact PBM size (2.149s).
+- Nine new focused regressions first failed (seven assertion failures and fourteen
+  subtest errors), then passed (7.577s): selected/unselected issue overview and
+  detail, PR/build external fields, literal-escape PBM equality, distinct missing
+  glyph rasters, native supported accents, raw source revision, all five long
+  detail pages and Back/navigation. Real authenticated loopback HTTP200 included.
+- Full cleared-env ResourceWarning-errors gateway: 422 tests OK, 227.416s.
+- Full tools: 16 run, 15 passed, one private-artifact skip, 4.877s.
+- Work gate: 69 tests OK, 30.778s; seven-module repairs: 100 OK, 93.228s.
+  Both are overlapping subsets of the 422, not additional unique tests.
+- Unchanged parent probes: four OK, 3.027s. Fresh synthetic Work and campaign
+  previews generated; actual selected/unselected issue, build detail and final
+  page inspected without clipping. Long ASCII escapes use existing character
+  hard-wrap (an escape can cross lines); all content is preserved through 5/5.
+  This is not physical panel acceptance.
+
+Only integration/PR12 receives the authorized normal fix push. The exact-head CI
+and remote readback must be attached to the same-card independent re-review;
+prior-head success is insufficient. Latest operator instruction is read-only
+rollout readiness/no deploy: no config/credential provisioning, restart, collector
+trigger, live device probe, HA action, private ingestion, A2A message or flash.
+Campaign acceptance still awaits independent re-review of the W1 correction.
 
 ## Deployed versus pending
 
