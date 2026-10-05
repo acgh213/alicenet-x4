@@ -197,13 +197,50 @@ actor changed and merged PR8/9/10; this worker did not edit, push or merge them.
 Remote readback now reports PR8 `e439d2b` merged via `8dcfbb2`, PR9 `f69202f`
 merged via `a8bb73a`, and PR10 `f8e320f` merged via `5972457` (actor `acgh213`).
 Original specified lane heads remain integration ancestors. PR12 repair push CI
-passed, but PR12 now reports CONFLICTING/DIRTY and no exact repair-head
-pull_request workflow run. Repair code gates pass; the required paired remote CI
-and independent re-review gate are NOT complete. No reconciliation with changed
-main, merge or deployment is authorized by this bounded repair card. Resolve the
-external base conflict under explicit integration-only scope, retest and obtain
-both exact-head checks before approval/release. Do not deploy the externally
-merged lane heads on the basis of this repair's tests.
+passed, but at that publication boundary PR12 reported CONFLICTING/DIRTY and no
+exact repair-head pull_request workflow run. The controller subsequently
+explicitly authorized merging current `origin/master` INTO integration only,
+resolving conflicts, retesting and normal pushing to PR12. This does not authorize
+master/input writes, force/rebase, deployment, source expansion or acceptance.
+Do not deploy externally merged lane heads on the basis of these repair tests.
+
+### Authorized changed-base reconciliation
+
+Merged base: `5972457f3b9547d4f3fbd3d221b603baec42c6ca`. Reviewed every added
+non-ancestor commit and merge conflict rather than choosing a branch wholesale:
+
+- `c5e775e` / PR11 (already externally merged via `1188917`) adds bounded public
+  Work issue browsing, schema-1 compatibility/schema-2 collector, independent
+  PR/issue/build freshness, no bodies/comments/mutations and capped-empty honesty.
+  Preserve it unchanged; deployment must upgrade collector and gateway together.
+- `e439d2b` adds House delayed-preview navigation revision/conditional installation
+  and cancels discarded actions. Its four behavioral tests were copied unchanged
+  and reproduced four failures against the repair head before merging; all pass
+  after reconciliation alongside atomic Confirm and monotone receipt tests.
+- Upstream `f69202f` and `f8e320f` combine House/Inbox/Life with legacy-slide
+  isolation and local-first event interpretation. Preserve these guards and the
+  repair's later consent-serialization fence, semantic Life ETag, House delayed
+  frame isolation and shrinking body deadline/generic HTTP408 response.
+- Six textual conflicts: protocol/README, menu, daemon, store signature and menu
+  test. Keep keyword client wiring, one displayed Life context read and stronger
+  integrated destination assertions; combine upstream action/report wording with
+  the corrected 304 contract. No firmware changes, new source flags or permission.
+
+Executed on the reconciled code:
+
+- Cleared-env ResourceWarning-errors gateway discovery: 413 tests OK, 256.027s.
+- Cleared-env tools: 16 run, 15 passed, one private-artifact skip, 4.481s.
+- Unchanged parent integration probes: four OK, 2.566s.
+- House flow (including four upstream navigation regressions): 20 OK, 32.334s;
+  public Work issue gate: nine OK, 5.349s. These are subsets of the full suite.
+- All seven repair regression modules rerun with real synthetic loopback HTTP;
+  detailed results and fresh House/Inbox/Life/glyph pixels are in the task evidence.
+
+Exact reconciled-head paired CI, clean tree and remote PR readback belong in the
+card handoff; prior-head CI is not sufficient. Keep PR12 Draft OPEN and request
+same-card independent buildreviewer review. REQUEST_CHANGES remains the historical
+review verdict until that reviewer accepts this exact head; no campaign or
+physical acceptance is inferred from reconciliation or green automated gates.
 
 ## Deployed versus pending
 
@@ -218,8 +255,10 @@ is basic user-reported Work functionality acceptance. Do not request a repeat of
 that basic test. Exact SHA text/hold-refresh, calibrated timing, battery current,
 endurance and interruption characterization were not separately established.
 
-House/Inbox/Life: implemented, host-tested, unmerged, undeployed, physical pending,
-REQUEST_CHANGES. House needs current collector source/state fingerprints and
+House/Inbox/Life: lane PRs externally merged, but corrected campaign integration
+is still draft/unmerged/undeployed, physical pending and independent re-review
+pending (initial verdict REQUEST_CHANGES). No live rollout was performed by this
+repair worker. House needs current collector source/state fingerprints and
 helper/collector HA-origin agreement, separately authorized controls, and a
 separate approved-light cancel/execute/readback/reverse drill; washer excluded.
 Inbox needs explicit exact source/chat/thread/display-label/publisher permission;

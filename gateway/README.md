@@ -220,10 +220,10 @@ weather zeros, sampling honesty and pagination. HTTP tests exercise built-in
 page precedence, navigation dedupe, authentication and Muse/local action separation.
 Host tests are not physical panel or sleep-current measurements.
 
-## Work: public PR and build browsing
+## Work: public PR, issue and build browsing
 
 Work is a read-only GitHub surface for the explicitly approved public repository
-`acgh213/alicenet-x4`. It shows open PRs and the latest GitHub Actions run on the
+`acgh213/alicenet-x4`. It shows open PRs, open issues and the latest GitHub Actions run on the
 observed default branch. A successful build for an older head is labelled
 `older head`; it never implies that newer code passed. PRs show draft/ready
 state, not merge readiness or per-PR CI.
@@ -234,7 +234,7 @@ Confirm binds to the identity shown on the device's frame, so reordered or
 removed PRs cannot open a different item. Changed details have a notice.
 An unattended timer wake still returns to the ambient dashboard.
 
-PR and build collection ages are displayed separately. Empty successful reads,
+PR, issue and build collection ages are displayed separately. Empty successful reads,
 absent builds, unavailable reads, retained failed-refresh data and data older
 than thirty minutes are distinct. A full capped PR page says
 `Showing first 100 PRs`; this is not a claim to have fetched every open PR.
@@ -269,6 +269,17 @@ but no valid snapshot, it says unavailable. Removing the allowlist hides cached
 data immediately. A successful refresh updates the gateway; device display
 still occurs on its next pull. Public unauthenticated API rate limits can prevent
 fresh collection without implying that the repository is empty.
+
+Issues show only number, title, author, open state, updated time and source link;
+bodies, comments and issue mutations are excluded. GitHub returns PR records in
+the issues endpoint; those are filtered out. Collection examines at most two
+50-record pages, including filtered PR records, and labels a full capped result
+as `issue list capped`. A capped empty result never claims there are no open issues.
+
+The reader accepts existing schema-1 PR/build snapshots and shows issues as
+unavailable until collected. New snapshots use schema 2; the config and public
+allowlist are unchanged. When a later deployment is approved, upgrade collector
+and gateway together: an older reader cannot consume schema-2 snapshots.
 
 Work tests use synthetic GitHub responses, real local HTTP device requests and
 offline subprocess refresh fixtures. Existing Python 3.11/Pillow gateway checks

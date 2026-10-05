@@ -110,6 +110,7 @@ class Menu(unittest.TestCase):
             with self.subTest(name=name):
                 self.menu.go_home("x4-01")
                 self.open_destination(name)
+                self.assertEqual(self.view(), name)
                 self.assertTrue(self.frame()["card"].startswith(card))
                 self.assertIn(text, self.texts())
                 self.assertNotIn("Not connected yet", self.texts())

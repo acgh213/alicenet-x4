@@ -59,6 +59,44 @@ class Flow(unittest.TestCase):
     def texts(self, frame=None):
         return '\n'.join(i['text'] for i in (frame or self.frame())['image'].info['layout'])
 
+    def _preview_during_navigation(self, navigate):
+        self.open_room()
+        frame = self.frame()
+        original = self.control.preview
+        actions = []
+        def delayed(*args):
+            action = original(*args)
+            actions.append(action)
+            navigate(frame)
+            return action
+        self.control.preview = delayed
+        self.press('confirm', frame=frame)
+        self.ha.set_light.assert_not_called()
+        return actions[0]
+
+    def test_delayed_preview_does_not_reopen_after_back(self):
+        action = self._preview_during_navigation(lambda frame: self.press('back', frame=frame))
+        self.assertEqual(self.app.menu.state('x4-01')['view'], 'house')
+        self.assertEqual(self.control.receipt('x4-01', action['id'])['outcome'], 'cancelled')
+
+    def test_delayed_preview_does_not_reopen_after_timer_wake(self):
+        action = self._preview_during_navigation(lambda frame: self.app.menu.wake('x4-01', 'timer'))
+        self.assertEqual(self.app.menu.state('x4-01')['view'], 'glance')
+        self.assertEqual(self.control.receipt('x4-01', action['id'])['outcome'], 'cancelled')
+
+    def test_delayed_preview_does_not_reopen_after_home(self):
+        action = self._preview_during_navigation(lambda frame: self.app.menu.go_home('x4-01'))
+        self.assertEqual(self.app.menu.state('x4-01')['view'], 'glance')
+        self.assertEqual(self.control.receipt('x4-01', action['id'])['outcome'], 'cancelled')
+
+    def test_delayed_preview_does_not_restore_after_return_to_same_room(self):
+        def leave_and_return(frame):
+            self.press('back', frame=frame)
+            self.press('confirm')
+        action = self._preview_during_navigation(leave_and_return)
+        self.assertEqual(self.app.menu.state('x4-01')['view'], 'room')
+        self.assertEqual(self.control.receipt('x4-01', action['id'])['outcome'], 'cancelled')
+
     def test_preview_displays_target_state_request_source_revision_then_verified_receipt(self):
         frame = self.preview()
         for text in ('light.lr', 'Observed: off', 'Requested: on', 'Home Assistant', 'Revision:', 'Back: cancel'):

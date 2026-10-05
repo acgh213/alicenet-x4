@@ -46,7 +46,8 @@ Responses:
   - `ETag`: opaque revision (up to 48 hex characters). Most views hash PBM;
     House controls also bind selected entity, HA source and observation fingerprint;
     Inbox and Life also bind opaque displayed identity/revision/page context.
-    Identical pixels with changed action context must return a new frame, not 304.
+    Identical pixels with changed action/report context must return a new frame,
+    not 304, and cannot rebind buttons to a different target or private report.
   - `X-Refresh: full|half|fast`: a hint; the device may upgrade it (first frame after wake is
     always ≥ half)
   - `X-Card: weather.today`: the current card id, echoed back with events. Life uses
