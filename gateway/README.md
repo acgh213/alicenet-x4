@@ -33,9 +33,9 @@ In the destinations menu (Home, Work, Agents, House, Life, Reports, Inbox, Statu
   snapshot and manual `life.reminder.*`, `life.rest.*`, `life.play.*` report IDs.
   Left/Right changes these views; Confirm reads only (no acknowledgment/Muse), hold
   refreshes existing sources. See [docs/life.md](../docs/life.md) for provenance,
-  partial-consent and physical gates. This feature lane is not deployed yet.
-- Inbox has a read-only, explicitly scoped report ingress;
-  see [Inbox consent and API](../docs/inbox.md).
+  partial-consent and physical gates. The integration branch is not deployed yet.
+- Inbox has read-only, explicitly scoped report ingress;
+  see [Inbox consent and API](../docs/inbox.md). Live ingestion is not authorized.
 - An unattended timer/boot wake returns the menu to the dashboard.
 
 House (read-only by default; explicit light controls are opt-in):
@@ -286,8 +286,10 @@ offline subprocess refresh fixtures. Existing Python 3.11/Pillow gateway checks
 cover the source and rendered/navigation contract. No live host, hardware or
 device activation is needed to run them.
 
-Firmware build/install instructions and pending battery sleep gates:
-[`../firmware/README.md`](../firmware/README.md). Preserve CrossInk in ota_0;
+Firmware build/install instructions and remaining power/timing characterization:
+[`../firmware/README.md`](../firmware/README.md). The ambient functional drill passed;
+Work host deployment and pending physical checks are recorded in
+[`../docs/work-rollout.md`](../docs/work-rollout.md). Preserve CrossInk in ota_0;
 install the application image via **CrossInk Settings → SD Firmware Update** only.
 
 ## Legacy agent cards

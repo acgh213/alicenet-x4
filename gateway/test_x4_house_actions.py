@@ -26,7 +26,7 @@ class Actions(unittest.TestCase):
         self.ha.fetch.side_effect = lambda e: state(e, 'off')
         self.ha.set_light.return_value = True
         self.load = lambda: copy.deepcopy(self.cfg)
-        self.control = self.mod.Controls(self.store, self.load, self.ha)
+        self.control = self.mod.Controls(self.store, self.load, self.ha, clock=lambda: NOW)
         self.item = dict(collect(self.cfg, self.ha.fetch, NOW)['rooms'][0]['items'][0], ha_source_key='fixture-ha')
 
     def preview(self):
@@ -130,6 +130,49 @@ class Actions(unittest.TestCase):
                      dict(self.item, entity='light.other'), dict(self.item, domain='switch')):
             with self.assertRaises(ValueError): self.control.preview('x4-01', 'Living Room', item, NOW)
         self.ha.set_light.assert_not_called()
+
+    def test_expiry_during_preflight_never_sends_and_dates_actual_rejection(self):
+        action = self.preview()
+        clock = Mock(return_value=NOW + 119)
+        self.control.clock = clock
+        def slow_read(_):
+            clock.return_value = NOW + 129
+            return state('light.lr', 'off')
+        self.ha.fetch.side_effect = slow_read
+        receipt = self.control.confirm('x4-01', action['id'], NOW + 119)
+        self.assertEqual(receipt['outcome'], 'rejected')
+        self.assertEqual(receipt['at'], NOW + 129)
+        self.ha.set_light.assert_not_called()
+
+    def test_expiry_during_uncertainty_commit_never_sends(self):
+        action = self.preview()
+        clock = Mock(return_value=NOW + 119)
+        self.control.clock = clock
+        finish = self.control._finish
+        def slow_commit(*args):
+            receipt = finish(*args)
+            clock.return_value = NOW + 120
+            return receipt
+        from unittest.mock import patch
+        with patch.object(self.control, '_finish', side_effect=slow_commit):
+            receipt = self.control.confirm('x4-01', action['id'], NOW + 119)
+        self.assertEqual(receipt['outcome'], 'rejected')
+        self.assertEqual(receipt['at'], NOW + 120)
+        self.ha.set_light.assert_not_called()
+
+    def test_verified_receipt_dates_readback_not_invocation(self):
+        action = self.preview()
+        clock = Mock(return_value=NOW + 1)
+        self.control.clock = clock
+        def read(entity):
+            if self.ha.set_light.called:
+                clock.return_value = NOW + 10
+                return state(entity, 'on')
+            return state(entity, 'off')
+        self.ha.fetch.side_effect = read
+        receipt = self.control.confirm('x4-01', action['id'], NOW + 1)
+        self.assertEqual(receipt['outcome'], 'verified')
+        self.assertEqual(receipt['at'], NOW + 10)
 
     def test_policy_rechecked_after_fresh_state_read(self):
         action = self.preview()

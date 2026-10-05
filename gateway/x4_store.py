@@ -154,7 +154,8 @@ class Store:
                 "events": counts[0], "pending_forwards": counts[1] or 0, "dwell_s": self.dwell_s}
 
     # ---- events -----------------------------------------------------------
-    def record_events(self, batch, now, action_labels=None, contexts=None, allow_slide_actions=True, local_only=False):
+    def record_events(self, batch, now, action_labels=None, contexts=None,
+                      allow_slide_actions=True, local_only=False):
         """Insert events idempotently on (device, boot, seq); returns the ones that were new."""
         new = []
         with self.lock, self._db() as db:

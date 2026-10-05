@@ -157,11 +157,17 @@ class Inbox:
         return {"state": body["state"]}
 
     def remove(self, key, now):
-        # Re-project consent before even the removal API can reveal existence.
-        with self.store.lock, self.store._db() as db:
-            cfg, _ = self._policy()
-            self._prune(db, cfg)
-            return db.execute("DELETE FROM inbox_messages WHERE key=?", (key,)).rowcount > 0
+        # Fence the existence bit too. Cleanup must commit independently of a
+        # denied operation's rollback, including revocation during the delete.
+        try:
+            with self.store.lock, self.store._db() as db:
+                cfg, state = self._policy()
+                self._prune(db, cfg)
+                removed = db.execute("DELETE FROM inbox_messages WHERE key=?", (key,)).rowcount > 0
+                self._fence(cfg, state)
+                return removed
+        finally:
+            self._sync_policy()
 
     def snapshot(self, now):
         try:

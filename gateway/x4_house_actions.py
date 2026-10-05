@@ -2,6 +2,7 @@
 import hashlib
 import json
 import secrets
+import time
 
 from x4_house import controllable, validate_config, normalize
 
@@ -21,8 +22,9 @@ def permitted(config, room, item):
 
 
 class Controls:
-    def __init__(self, store, load_config, ha):
+    def __init__(self, store, load_config, ha, clock=time.time):
         self.store, self.load_config, self.ha = store, load_config, ha
+        self.clock = clock
         with store.lock, store._db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS house_actions (id TEXT PRIMARY KEY, device TEXT, body TEXT, receipt TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS house_audit (action TEXT, at REAL, outcome TEXT, body TEXT)')
@@ -93,15 +95,20 @@ class Controls:
                 # Independent current policy check AFTER the network read.
                 if fingerprint(validate_config(self.load_config())) != action['config_key']:
                     raise ValueError('revoked')
+                if not action['created_at'] <= self.clock() < action['expires_at']:
+                    raise ValueError('expired')
             except Exception:
-                return self._finish(action, 'rejected', now)
+                return self._finish(action, 'rejected', self.clock())
             # Commit uncertainty BEFORE sending: crash cannot make this action executable again.
-            self._finish(action, 'uncertain', now)
+            self._finish(action, 'uncertain', self.clock())
+            # The durable commit itself can block. Never send an expired preview.
+            if not action['created_at'] <= self.clock() < action['expires_at']:
+                return self._finish(action, 'rejected', self.clock())
             try:
                 accepted = self.ha.set_light(action['entity'], 'turn_' + action['requested'])
                 raw = self.ha.fetch(action['entity'])
                 if accepted is True and raw.get('entity_id') == action['entity'] and raw.get('state') == action['requested']:
-                    return self._finish(action, 'verified', now)
+                    return self._finish(action, 'verified', self.clock())
             except Exception:
                 pass  # no error bodies, credentials or fabricated success
             return self.receipt(device, ident)

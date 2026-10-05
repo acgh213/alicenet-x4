@@ -71,7 +71,8 @@ class HouseViews:
         with self.store.lock, self.store._db() as db:
             db.execute("UPDATE menu_state SET body=json_set(body, '$.house_receipt', json(?)) "
                        "WHERE device=? AND json_extract(body, '$.view')='house_receipt' "
-                       "AND json_extract(body, '$.house_action.id')=?",
+                       "AND json_extract(body, '$.house_action.id')=? "
+                       "AND json_extract(body, '$.house_receipt.outcome')='uncertain'",
                        (json.dumps(dict(receipt, action=action)), device, action['id']))
 
     def _on_house_preview(self, device, state, button, press, shown, now, result):
@@ -91,8 +92,16 @@ class HouseViews:
                 # Persist uncertainty in gateway BEFORE entering the helper. Lost response/crash
                 # cannot leave a runnable preview, even if helper accepted the service already.
                 receipt = {'id': action['id'], 'outcome': 'uncertain', 'action': action, 'at': now}
-                state.update(view='house_receipt', house_receipt=receipt)
-                self._save(device, state)
+                import json
+                with self.store.lock, self.store._db() as db:
+                    claimed = db.execute(
+                        "UPDATE menu_state SET body=json_set(body, '$.view', 'house_receipt', "
+                        "'$.house_receipt', json(?)) WHERE device=? "
+                        "AND json_extract(body, '$.view')='house_preview' "
+                        "AND json_extract(body, '$.house_action.id')=?",
+                        (json.dumps(receipt), device, action['id'])).rowcount
+                if not claimed:
+                    return result  # another Confirm/navigation won; do not schedule a helper
                 def execute():
                     receipt = {'id': action['id'], 'outcome': 'uncertain', 'action': action, 'at': now}
                     try:

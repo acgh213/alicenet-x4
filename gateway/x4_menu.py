@@ -173,25 +173,31 @@ class Menu(HouseViews, InboxViews, LifeMenuMixin):
             return self.glance.frame(device, now, tz, session_s, badge=attention(self.records.agents(now)))
         from x4_render import etag, to_pbm
         if inbox_snapshot is not None:
-            image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
-            if self.inbox is not None and self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
-                # Rendering can be slow. Re-project changed consent before publishing,
-                # never return pixels built from the earlier authorization.
-                inbox_snapshot = self._inbox(now)
-                state = self._settle_inbox(device, state, inbox_snapshot)
+            # Check AFTER serialization; a consent change while converting pixels
+            # must not return the old payload. Retry once, then render empty.
+            attempt = 0
+            while True:
                 image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
-                if self.inbox.policy_key() != inbox_snapshot.get("policy_key"):
+                pbm = to_pbm(image)
+                if (attempt == 2 or self.inbox is None
+                        or self.inbox.policy_key() == inbox_snapshot.get('policy_key')):
+                    break
+                if attempt == 0:
+                    inbox_snapshot = self._inbox(now)
+                else:
                     from x4_inbox_view import empty_snapshot
-                    inbox_snapshot = dict(empty_snapshot(), state="error")
-                    state = self._settle_inbox(device, state, inbox_snapshot)
-                    image, card, extra = self._render_inbox(state, inbox_snapshot, now, tz)
+                    inbox_snapshot = dict(empty_snapshot(), state='error')
+                state = self._settle_inbox(device, state, inbox_snapshot)
+                attempt += 1
         else:
             image, card, extra = self._render(device, state, now, tz, work_snapshot, life_snapshot, life_items)
-        pbm = to_pbm(image)
+            pbm = to_pbm(image)
         tag = '"' + etag(pbm + extra.get('frame_identity', '').encode()) + '"'
         context = {"view": state["view"], "record": state["record"], "revision": state["revision"],
                    "choice": state["choice"], "card": card, **extra}
-        if inbox_snapshot is not None:
+        if inbox_snapshot is not None or state['view'] in ('life', 'life_note'):
+            # Firmware keeps identity on 304; equal pixels with new semantic
+            # context therefore require a 200 carrying the new ETag and X-Card.
             tag = self._inbox_etag(pbm, context)
         with self.store.lock, self.store._db() as db:
             db.execute("INSERT OR IGNORE INTO glance_frames VALUES (?,?,?,?,?)",
@@ -248,6 +254,14 @@ class Menu(HouseViews, InboxViews, LifeMenuMixin):
         button, press = ev["button"], ev["press"]
         result = {"moved": False, "label": None, "refresh": False, "defer_house": defer_house}
         shown = self._shown(device, ev)
+        # House confirmations are local even after Home/timer or frame eviction.
+        # A stale room/preview/receipt must never become a glance brief/refresh.
+        house_views = ('house', 'room', 'house_preview', 'house_receipt')
+        if button == 'confirm' and (state['view'] in house_views
+                or (shown or {}).get('view') in house_views
+                or ev.get('card') == 'house' or (ev.get('card') or '').startswith('house.')):
+            if shown is None or shown.get('view') != state['view']:
+                return result
         if ((shown or {}).get("view") in ("inbox", "inbox_detail")
                 or ev.get("card") == "inbox" or (ev.get("card") or "").startswith("inbox.")
                 or state["view"] in ("inbox", "inbox_detail")):
@@ -258,7 +272,7 @@ class Menu(HouseViews, InboxViews, LifeMenuMixin):
             return result
         if state["view"] in ("life", "life_note"):
             return self._life_handle(device, dict(state, notice=None), button, press,
-                                     self._shown(device, ev), now, tz, result)
+                                     shown, now, tz, result)
         if state["view"] == "glance":
             if button == "back" and press == "short" and self.glance.state(device)["page"] == "home":
                 self._save(device, dict(state, view="menu", selected="home", notice=None))

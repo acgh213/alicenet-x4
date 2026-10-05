@@ -104,13 +104,16 @@ class Menu(unittest.TestCase):
         self.assertIn("1 decision", text)
         self.assertIn("1 unread", text)
 
-    def test_life_and_inbox_open_their_source_views(self):
-        for name in ("life", "inbox"):
+    def test_integrated_destinations_show_real_read_only_views(self):
+        for name, card, text in (("life", "life.", "Life · Now"),
+                                 ("inbox", "inbox", "Inbox not configured")):
             with self.subTest(name=name):
                 self.menu.go_home("x4-01")
                 self.open_destination(name)
                 self.assertEqual(self.view(), name)
-                self.assertFalse(self.frame()["card"].startswith("soon."))
+                self.assertTrue(self.frame()["card"].startswith(card))
+                self.assertIn(text, self.texts())
+                self.assertNotIn("Not connected yet", self.texts())
                 self.press("back")
                 self.assertEqual(self.view(), "menu")
 

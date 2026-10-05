@@ -28,7 +28,7 @@ def main():
         path = root / 'snapshot.json'
         path.write_text(json.dumps(snap))
         app = x4d.App({'db': str(root / 'db'), 'glance_snapshot': str(path)})
-        app.menu.house_controls = Controls(app.store, lambda: cfg, ha)
+        app.menu.house_controls = Controls(app.store, lambda: cfg, ha, clock=lambda: NOW)
         seq = 0
         def frame():
             return app.menu.frame('x4-01', NOW, TZ, 120)

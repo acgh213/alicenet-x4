@@ -3,7 +3,14 @@ import hashlib
 import json
 
 from PIL import ImageDraw
-from x4_dashboard import _age, _text
+from x4_dashboard import _age, _text as _draw_text
+from x4_inbox_view import display_text
+
+
+def _text(image, text, *args, **kwargs):
+    # Reuse the selected-font display policy; never normalize stored Work data
+    # or revisions. Escape combining stacks before measuring the layout box.
+    return _draw_text(image, display_text(text), *args, **kwargs)
 
 
 def revision(item):
@@ -75,7 +82,7 @@ def detail_pages(item, snapshot):
                     "Read-only: inspect the build on GitHub.")
     # Mode-1 rasterized wide glyphs can exceed fractional font measurements.
     # Leave a small horizontal margin when wrapping external Work text.
-    return paginate({"summary": body, "sections": []}, width=700, height=234)
+    return paginate({"summary": display_text(body), "sections": []}, width=700, height=234)
 
 
 def _utc(stamp):

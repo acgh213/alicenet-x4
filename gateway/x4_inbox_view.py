@@ -1,14 +1,34 @@
 """Read-only Inbox UI mixin, kept separate from parallel destination lanes."""
 import unicodedata
+from functools import lru_cache
 
-from x4_dashboard import _age, _text
+from x4_dashboard import _age, _font, _text
 from x4_inbox import fingerprint
 
 
+@lru_cache(maxsize=4096)
+def _supported(char):
+    # Pillow exposes the actual selected font's raster, not a Unicode coverage
+    # claim. Unsupported glyphs use the same .notdef mask as U+10FFFF.
+    for bold in (False, True):
+        font = _font(19, bold)
+        mask, missing = font.getmask(char), font.getmask('\U0010ffff')
+        if mask.size == missing.size and bytes(mask) == bytes(missing):
+            return False
+    return True
+
+
 def display_text(value):
-    """Keep non-renderable combining stacks legible as literal Unicode escapes."""
-    return "".join(f"\\u{ord(c):04x}" if unicodedata.category(c).startswith("M") else c
-                   for c in unicodedata.normalize("NFC", value))
+    """NFC; escape combining stacks and missing glyphs as ASCII code points.
+
+    Supported accents remain native. BMP escapes use \\uXXXX; non-BMP escapes
+    use \\UXXXXXXXX. Apply before wrapping to body, titles and source labels.
+    """
+    def visible(char):
+        if char.isspace() or (not unicodedata.category(char).startswith('M') and _supported(char)):
+            return char
+        return f'\\u{ord(char):04x}' if ord(char) <= 0xffff else f'\\U{ord(char):08x}'
+    return ''.join(visible(c) for c in unicodedata.normalize('NFC', value))
 
 
 def display_record(record):
@@ -82,7 +102,10 @@ class InboxViews:
                      "not_configured": "Inbox not configured · explicit consent required"}[status]
         if state["view"] == "inbox_detail":
             item = next(i for i in items if i["key"] == state["inbox_key"])
-            image = self._canvas(display_text(item["record"]["title"]), "Inbox › " + display_text(item["source"]), tz, now)
+            image = self._canvas(display_text(item["record"]["title"]), '', tz, now)
+            # _canvas uppercases breadcrumbs, which would turn BMP \\u escapes
+            # into invalid \\U forms. Draw the literal source fallback unchanged.
+            _text(image, 'INBOX › ' + display_text(item['source']), (24, 17, 620, 39), 14, True)
             pages = paginate(display_record(item["record"]))
             index = min(state["page"], len(pages) - 1)
             page = pages[index]

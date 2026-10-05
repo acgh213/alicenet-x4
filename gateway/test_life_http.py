@@ -95,7 +95,29 @@ class LifeHTTP(Server):
         self.assertEqual(status, 200)
         self.assertEqual(self.app.store.pending_forwards(), [])
 
-    def test_identical_pixels_replacement_304_keeps_distinct_card_context(self):
+    def test_identical_pixels_replacement_returns_200_for_current_firmware_identity(self):
+        from test_menu_life import NOW
+        with patch('x4d.time.time', return_value=NOW):
+            self.publish()
+            self.open_life(); self.press('right'); self.press('right')
+            status, first, pixels = self.call('GET', '/x4/v1/frame', headers={'X-Wake': 'session'})
+            self.assertEqual(status, 200)
+            self.agent({'action': 'record_remove', 'id': 'life.play.synthetic'})
+            self.publish('life.play.replaced')
+            status, current, new_pixels = self.call('GET', '/x4/v1/frame',
+                headers={'X-Wake': 'session', 'If-None-Match': first['ETag']})
+            self.assertEqual(status, 200)  # firmware ignores new X-Card/ETag on 304
+            self.assertEqual(pixels, new_pixels)
+            self.assertNotEqual(first['ETag'], current['ETag'])
+            self.assertNotEqual(first['X-Card'], current['X-Card'])
+            self.press('confirm', shown=first)
+            self.assertEqual(self.app.menu.state('x4-01')['view'], 'life')
+            self.press('confirm', shown=current)
+            self.assertEqual(self.app.menu.state('x4-01')['life_record'], 'life.play.replaced')
+            self.assertEqual(self.app.menu.state('x4-01')['view'], 'life_note')
+            self.assertEqual(self.app.store.pending_forwards(), [])
+
+    def test_identical_pixels_replacement_keeps_distinct_card_context(self):
         self.publish()
         self.open_life(); self.press('right'); self.press('right')
         first = self.frame()

@@ -171,6 +171,43 @@ class InboxMenu(unittest.TestCase):
         self.press("down", shown=old)
         self.assertEqual(self.menu.state("x4-01")["page"], 0)
 
+    def test_revocation_during_pbm_serialization_cannot_return_old_pixels(self):
+        from unittest.mock import patch
+        from x4_render import to_pbm
+        self.open_inbox(); self.press('confirm')
+        def revoke(image):
+            result = to_pbm(image)
+            self.cfg.unlink(missing_ok=True)
+            return result
+        with patch('x4_render.to_pbm', side_effect=revoke):
+            actual = self.frame()
+        expected = self.frame()
+        self.assertEqual(actual['pbm'], expected['pbm'])
+        self.assertEqual(actual['card'], 'inbox')
+        self.assertEqual(self.menu.state('x4-01')['view'], 'inbox')
+
+    def test_repeated_policy_change_has_bounded_empty_frame_fallback(self):
+        from unittest.mock import patch
+        self.open_inbox(); self.press('confirm')
+        with patch.object(self.inbox, 'policy_key', return_value='always different'):
+            with patch.object(self.menu, '_render_inbox', wraps=self.menu._render_inbox) as render:
+                frame = self.frame()
+        self.assertEqual(render.call_count, 3)
+        self.assertEqual(frame['card'], 'inbox')
+        self.assertEqual(self.menu.state('x4-01')['view'], 'inbox')
+        self.assertNotIn('Literal report', '\n'.join(r['text'] for r in frame['image'].info['layout']))
+
+    def test_identical_remove_republish_preserves_logical_identity(self):
+        self.open_inbox(); self.press('confirm')
+        old = self.frame()
+        key = self.inbox.snapshot(NOW)['items'][0]['key']
+        self.inbox.remove(key, NOW)
+        self.inbox.put(message(), NOW)
+        new = self.frame()
+        self.assertEqual(old['pbm'], new['pbm'])
+        self.assertEqual(old['etag'], new['etag'])
+        self.assertEqual(self.menu.state('x4-01')['view'], 'inbox_detail')
+
     def test_revocation_during_render_cannot_publish_old_content(self):
         from unittest.mock import patch
         self.open_inbox()
@@ -185,6 +222,61 @@ class InboxMenu(unittest.TestCase):
         self.assertNotIn("Literal report text", text)
         self.assertIn("not configured", text.lower())
 
+    def test_unsupported_body_title_source_and_non_bmp_have_explicit_distinct_pixels(self):
+        import x4_inbox_view
+        from x4_render import to_pbm
+        from PIL import Image
+        self.open_inbox()
+        self.press('confirm')
+        state = self.menu.state('x4-01')
+        base = self.inbox.snapshot(NOW)
+        import copy
+        for field in ('body', 'title', 'source'):
+            for left, right in (('北京', '上海'), ('\U00020000', '\U00020001')):
+                with self.subTest(field=field, left=left):
+                    rasters = []
+                    for value in (left, right):
+                        snap = copy.deepcopy(base)
+                        item = snap['items'][0]
+                        if field == 'body': item['record']['summary'] = value
+                        elif field == 'title': item['record']['title'] = value
+                        else: item['source'] = value
+                        image, _, _ = self.menu._render_inbox(state, snap, NOW, TZ)
+                        dash.Dashboard.assert_layout(self, image)
+                        rasters.append(to_pbm(image))
+                        escaped = ''.join(f'\\u{ord(c):04x}' if ord(c) <= 0xffff else f'\\U{ord(c):08x}' for c in value)
+                        if field == 'body': item['record']['summary'] = escaped
+                        elif field == 'title': item['record']['title'] = escaped
+                        else: item['source'] = escaped
+                        expected, _, _ = self.menu._render_inbox(state, snap, NOW, TZ)
+                        self.assertEqual(to_pbm(image), to_pbm(expected))
+                        # The fallback has actual ink, not transcription-only evidence.
+                        self.assertIsNotNone(Image.open(__import__('io').BytesIO(rasters[-1])).getbbox())
+                    self.assertNotEqual(*rasters)
+        self.assertEqual(x4_inbox_view.display_text('café'), 'café')
+
+    def test_unsupported_text_paginated_raster_matches_literal_escapes_to_end(self):
+        from x4_inbox_view import display_text, display_record
+        from x4_render import to_pbm
+        from x4_menu import paginate
+        import copy
+        self.open_inbox(); self.press('confirm')
+        snap = self.inbox.snapshot(NOW)
+        snap['items'][0]['record']['summary'] = ('北京\U00020000 ' * 100) + ' END'
+        literal = copy.deepcopy(snap)
+        literal['items'][0]['record']['summary'] = ''.join(
+            c if c.isascii() else f'\\u{ord(c):04x}' if ord(c) <= 0xffff else f'\\U{ord(c):08x}'
+            for c in snap['items'][0]['record']['summary'])
+        pages = paginate(display_record(literal['items'][0]['record']))
+        self.assertGreater(len(pages), 1)
+        for page in range(len(pages)):
+            state = dict(self.menu.state('x4-01'), page=page)
+            actual, _, _ = self.menu._render_inbox(state, snap, NOW, TZ)
+            expected, _, _ = self.menu._render_inbox(state, literal, NOW, TZ)
+            self.assertEqual(to_pbm(actual), to_pbm(expected))
+            dash.Dashboard.assert_layout(self, actual)
+        self.assertIn('END', pages[-1]['lines'][-1])
+
     def test_combining_marks_cannot_poison_detail_render(self):
         self.inbox.put(message(id="ink", text="A" + "\u0301" * 80), NOW + 1)
         self.open_inbox()
@@ -192,6 +284,29 @@ class InboxMenu(unittest.TestCase):
         frame = self.frame()
         self.assertTrue(frame["pbm"].startswith(b"P4\n800 480\n"))
         dash.Dashboard.assert_layout(self, frame["image"])
+
+    def test_source_escape_prefix_survives_breadcrumb_uppercase(self):
+        from PIL import ImageDraw, ImageChops
+        from x4_dashboard import _text
+        self.open_inbox(); self.press('confirm')
+        snap = self.inbox.snapshot(NOW)
+        snap['items'][0]['source'] = '北京'
+        image, _, _ = self.menu._render_inbox(self.menu.state('x4-01'), snap, NOW, TZ)
+        expected = image.copy()
+        expected.info['layout'] = []
+        ImageDraw.Draw(expected).rectangle((24, 17, 620, 39), fill=1)
+        _text(expected, 'INBOX › \\u5317\\u4eac', (24, 17, 620, 39), 14, True)
+        self.assertIsNone(ImageChops.difference(image, expected).getbbox())
+
+    def test_uppercase_source_expansion_cannot_poison_detail_raster(self):
+        cfg = config()
+        cfg['scopes'][0]['label'] = chr(0x390) * 40
+        self.cfg.write_text(json.dumps(cfg))
+        self.inbox.put(message(), NOW)
+        self.open_inbox(); self.press('confirm')
+        frame = self.frame()
+        self.assertTrue(frame['pbm'].startswith(b'P4\n800 480\n'))
+        dash.Dashboard.assert_layout(self, frame['image'])
 
     def test_combining_title_and_policy_label_cannot_poison_views(self):
         cfg = config()

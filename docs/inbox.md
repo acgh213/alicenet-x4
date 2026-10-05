@@ -27,10 +27,15 @@ Synthetic example only (not authorization or live identifiers):
 
 Publish configuration atomically, then perform an authenticated `list` readback.
 Remove a scope or the policy file to revoke. Every operation re-reads policy and
-prunes nonmatching cached rows. In-flight ingest checks policy again before commit;
-rendering checks it again after building pixels and discards a changed-consent
-frame. Unknown/corrupt policy fails closed. Change `grant` on every reauthorization,
+prunes nonmatching cached rows. In-flight ingest/remove checks policy again before
+returning; remove's revocation cleanup commits even when the existence response is
+denied. Rendering checks consent after PBM serialization, retries projection once,
+then falls back to empty on continued change. Unknown/corrupt policy fails closed.
+Change `grant` on every reauthorization,
 including revoke/regrant between gateway reads, so old cache cannot resurrect.
+The last consent check cannot be atomic with network transmission: a change after
+that check or during response delivery can still leave the prior frame on the
+panel until its next pull. This is not immediate or forensic erasure.
 Scope edits are sampled at operation boundaries; no software can erase pixels
 already downloaded to a sleeping e-ink panel. Wake/pull to replace those pixels
 with the revoked/not-configured screen. A publisher holding copied content must
@@ -43,7 +48,8 @@ Device tokens cannot publish or list reports. Do not expose this plaintext LAN A
 publicly; use loopback/a trusted local publisher (or an explicitly secured tunnel).
 No new secret, service, timer or live adapter is provisioned by this feature.
 
-Payloads (JSON, at most 16384 wire bytes, bounded body-read timeout):
+Payloads (JSON, at most 16384 wire bytes, five-second overall monotonic body-read
+budget, not a renewable inactivity timeout):
 
 - `{"op":"put","message":{...}}` accepts exactly `source`, `chat`, `thread`,
   `id`, `time`, `title`, `text`. IDs are stable source message IDs (128 characters),
@@ -54,7 +60,11 @@ Payloads (JSON, at most 16384 wire bytes, bounded body-read timeout):
   staleness and a pagination-compatible report body. No chat/thread/source IDs are
   echoed. The policy fingerprint is only an opaque operation-generation fence.
 - `{"op":"remove","key":"<64 hex key from put/list>"}` deletes an authorized
-  cached report. Removed IDs can be republished; open old details are invalidated.
+  cached report, with a final consent fence before returning its existence bit.
+  Removed IDs can be republished. Details reset for missing rows, changed content,
+  or changed scope/grant. Identical remove/republish under the same grant reuses
+  logical key/revision; if no frame observes absence, identical details may remain
+  open. This is intentional logical identity, not per-publication incarnation.
 - `{"op":"status","source":"...","chat":"...","thread":"...","state":"ok"}`
   records a publisher's observation. State is `ok`, `error`, or `unavailable`;
   do not report ok unless a source was actually observed (including valid empty).
@@ -62,7 +72,9 @@ Payloads (JSON, at most 16384 wire bytes, bounded body-read timeout):
   a successful source observation; identical retry does not refresh source age.
 
 Responses: `200 {"ok":true,"result":...}`, `401` bad agent auth, `403` scope denied,
-`400` malformed/oversized/conflicting/full cache, `503` storage unavailable.
+`400` malformed/oversized/conflicting/full cache, `408` overall body deadline,
+`503` storage unavailable. Deadline/stall returns
+`{"ok":false,"error":"Request body timed out"}` and closes the connection.
 Error responses are generic and never echo payloads or exception text. Acceptance
 means stored, NOT displayed on the X4. Read back `list`, then the device pulls.
 Keys include the exact scope/grant and stable ID. Identical retry returns the same
@@ -85,8 +97,12 @@ Source label and message time stay on detail pages. Source observation state and
 report receipt staleness are separate: not configured, unavailable before a first
 observation, error, stale cached reports, and valid empty success are honest.
 Stale details retain source failure indicators. Text is literal data, never
-executed or forwarded. Unrenderable combining marks are shown as Unicode escapes
-after NFC normalization; stored/readback text remains unchanged. Inbox uses the
+executed or forwarded. After NFC normalization, combining marks and unsupported
+font glyphs are rendered explicitly as ASCII Unicode escapes (`\uXXXX` for BMP,
+`\UXXXXXXXX` for non-BMP). This applies before wrapping to text, titles and source
+labels; supported accents remain native. Raster tests verify distinct CJK/non-BMP
+text produces distinct pixels matching literal escapes, through paginated END.
+Stored/readback text remains unchanged. Inbox uses the
 existing report pagination shape but never creates typed Records, decisions,
 answers, ambient dashboard counts or forwarding contexts containing content.
 

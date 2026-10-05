@@ -86,18 +86,28 @@ bounds), and durable event allocation (lost ACK then a new press, persistence
 failure and exhaustion).
 Wiring guards are source checks, not substitutes for device tests.
 
-## Pending physical gates — not run for this release
+## Physical acceptance and remaining targeted checks
 
-1. Install using SD updater; verify Back+Up still returns to CrossInk.
-2. On **battery without USB**, retain the card at session expiry, measure sleep
-   current, and observe an actual timer wake with GPIO13 held HIGH.
-3. Verify Power wake does not immediately turn off; a fresh hold turns off on
-   battery and wakes correctly on USB. Check latch/reset holds across cycles.
-4. Check short/long Confirm around 700 ms and during refresh/HTTP delays: one
+The [ambient drill log](../docs/drill-log.md#2026-10-03-ambient-dashboard-navigation)
+records `0.3.1-ambient` installed and functionally verified: real-source panel
+rendering, navigation, short/long Confirm actions, ambient image retention, and
+timer/Power wake/latch operation. Earlier recovery drills established the
+Back+Up route to CrossInk. No new firmware install is needed for the gateway-only
+Work surface.
+
+Remaining characterization (not established by that functional drill):
+
+1. On **battery without USB**, measure sleep current and repeated-cycle endurance;
+   do not infer current or battery-only conditions from the wake report.
+2. Check deliberate manual-off and latch/reset behavior across repeated battery
+   and USB cycles; the drill's functional Power wake is not a full power matrix.
+3. Check short/long Confirm around 700 ms and during refresh/HTTP delays: one
    event classification per hold, correct navigation and complete 120-second
    activity extension. Confirm polling does not keep an idle device awake forever.
-5. Interrupt Wi-Fi/PBM downloads: preserve the panel, no corrupted partial
+4. Interrupt Wi-Fi/PBM downloads: preserve the panel, no corrupted partial
    redraws, honest stale-panel logs; recover with a full first refresh per wake.
 
-Host tests and an accepted SD image do **not** establish battery timer wake,
-panel fidelity, input timing, heap availability or power consumption on hardware.
+Host tests and an accepted SD image do **not** establish physical measurements,
+heap availability under real operation, or these fault/endurance tests. Cassie
+reported basic Work navigation functional on October 4; detailed SHA, hold-refresh
+and measurement checks remain distinct from that user-reported acceptance.
