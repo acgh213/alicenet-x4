@@ -1,7 +1,8 @@
 # X4 campaign integration review — 2026-10-04
 
-Verdict: REQUEST_CHANGES. Existing automated gates pass; adversarial behavioral
-probes found seven outstanding defects. This is a draft integration, not release
+Verdict of the initial independent review: REQUEST_CHANGES. Existing automated
+gates passed; adversarial probes found seven defects. The repair phase below has
+regression-tested corrections ready for independent re-review, not release
 acceptance. Do not merge individual PRs or this branch, deploy it, enable House
 controls, or activate live Inbox ingestion on the basis of green CI.
 
@@ -36,7 +37,10 @@ Conflict paths: `docs/protocol.md`, `gateway/README.md`, `gateway/x4_menu.py`,
 "unbuilt" destination test now positively exercises implemented Life and
 unconfigured Inbox rather than silently iterating an empty list.
 
-## Required changes (line numbers in reconciled source)
+## Initial required changes (line numbers in initially reconciled source)
+
+The numbered findings below are the preserved independent review reproduction,
+not a claim that they remain uncorrected after the repair phase.
 
 1. H1 / P2 — `gateway/x4_house_actions.py:83-101`: the helper uses invocation
    time to check expiry, then performs a blocking state read and policy check.
@@ -131,6 +135,60 @@ Adversarial scripts are preserved in the task's downloadable review-evidence
 bundle; run `pr8_adversarial.py`, `inbox_pr9_review_probes.py Probe`, and
 `x4_integration_review_probes.py Review` with cleared Python environment paths.
 They use synthetic temporary data, not live transport.
+
+## Repair phase — t_8b572cc3, independent re-review pending
+
+Implemented in integration only, preserving all input lane heads as ancestors:
+
+- H1: injected current helper clock checked after fresh preflight and immediately
+  after the uncertainty commit/before send; rejected/verified receipts use actual
+  helper time. Process-shared deduplication and uncertainty-before-send remain.
+- H2: conditional atomic SQL preview-to-receipt claim schedules one executor;
+  updates apply only while the matching receipt is uncertain, never regressing a
+  terminal result or restoring obsolete navigation/action IDs.
+- H3: stale/evicted/foreign House Confirm/hold remains local before glance routing;
+  real HTTP tests cover timer/Home and batched Back-to-glance, no Muse/refresh.
+- I1: actual selected-font missing masks escape unsupported BMP/non-BMP glyphs
+  before measured wrapping. Body/title/source rasters equal literal escape rasters
+  and differ for distinct CJK/non-BMP strings. Supported accents stay native;
+  source escapes bypass breadcrumb uppercasing. Pagination reaches END.
+- I2: read1 with shrinking monotonic five-second body budget; stalled and trickled
+  input returns fixed generic HTTP408 JSON and closes. Wire bounds/short EOF/bad
+  UTF8/malformed length still return generic Inbox400 without private echoes.
+- I3: remove fences consent before existence return, rolls back on revocation and
+  commits revocation pruning independently; real HTTP403 and empty-table checks.
+- L1: gateway-only Life ETag hashes full semantic frame context. Equal-pixel note
+  replacement returns 200, supplies new identity to current firmware, rejects old
+  Confirm and opens new note from current identity. No firmware edit/flash.
+
+Inbox caveats addressed explicitly: final render check moved after serialization,
+bounded re-projection then empty fallback; post-check/network-response race and
+sleeping e-ink retention remain documented. Identical remove/republish under the
+same grant keeps logical key/revision if no frame observes absence; changed body,
+missing row or changed grant invalidates details. No incarnation guarantee.
+
+Actually executed final repair verification:
+
+- Cleared-env ResourceWarning-errors gateway discovery: 400 tests OK, 195.146s.
+- Cleared-env tools: 16 run, 15 passed, one skip (private drill artifact absent),
+  4.524s. No firmware changed; original firmware gates are recorded above, not
+  rerun or claimed as new hardware acceptance.
+- Original independent integration probes copied unchanged from durable evidence:
+  four OK, 2.568s, including equal pixels/distinct Life ETag and no House brief.
+- Every numbered fix had a focused failing behavioral regression observed before
+  implementation. Real loopback deadline test completes with 408 around t=5 after
+  chunks at t=0/3, before planned t=6 completion; short trickle and stall also pass.
+- Synthetic House/Inbox/Life previews regenerated; actual glyph fallback pixels
+  inspected through page 5/5 END, with correct literal BMP/non-BMP escapes and no
+  clipping. Verified House target/request/source/no retry and Life note END,
+  publish age/source attribution and no-dismiss footer are legible. Pixel review
+  is not physical panel acceptance. No live private pixels in evidence.
+
+Repair code commits: `4fb6738`, `ae75f4a`. Draft PR12 receives normal fix push only,
+no merge/deploy. Exact-head CI and remote head readback are recorded in the repair
+card handoff (not inferred from earlier 3b956f5 CI). Initial REQUEST_CHANGES stands
+until independent buildreviewer clears this exact repaired head; campaign and
+physical acceptance are still pending.
 
 ## Deployed versus pending
 
