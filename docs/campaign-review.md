@@ -190,6 +190,21 @@ card handoff (not inferred from earlier 3b956f5 CI). Initial REQUEST_CHANGES sta
 until independent buildreviewer clears this exact repaired head; campaign and
 physical acceptance are still pending.
 
+### External remote drift discovered at the repair publication boundary
+
+The initial input inventory above is historical. During repair execution another
+actor changed and merged PR8/9/10; this worker did not edit, push or merge them.
+Remote readback now reports PR8 `e439d2b` merged via `8dcfbb2`, PR9 `f69202f`
+merged via `a8bb73a`, and PR10 `f8e320f` merged via `5972457` (actor `acgh213`).
+Original specified lane heads remain integration ancestors. PR12 repair push CI
+passed, but PR12 now reports CONFLICTING/DIRTY and no exact repair-head
+pull_request workflow run. Repair code gates pass; the required paired remote CI
+and independent re-review gate are NOT complete. No reconciliation with changed
+main, merge or deployment is authorized by this bounded repair card. Resolve the
+external base conflict under explicit integration-only scope, retest and obtain
+both exact-head checks before approval/release. Do not deploy the externally
+merged lane heads on the basis of this repair's tests.
+
 ## Deployed versus pending
 
 Read-only operator check: existing x4d PID 1867851 active/running, both source
